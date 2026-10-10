@@ -16,7 +16,67 @@ A reference specification for building an ultra-low latency, low-footprint pure 
 
 ---
 
-## 2. Server Framework & Runtime Engine
+## 2. Environment Setup Guide (Windows & Linux)
+
+### Windows 10 / 11 Setup
+
+Run the following commands in PowerShell (as Administrator):
+
+```powershell
+# 1. Install Microsoft Visual Studio C++ Build Tools (MSVC Linker)
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--passive --add Microsoft.VisualStudio.Workload.VCTools"
+
+# 2. Install Rustup (Installs rustc compiler and cargo package manager)
+winget install Rustlang.Rustup
+
+# 3. Restart your PowerShell terminal, then verify the installation
+rustc --version
+cargo --version
+
+# 4. Optional: Install productivity CLI utilities via Cargo
+cargo install cargo-watch                                      # Hot-reloading daemon
+cargo install sqlx-cli --no-default-features --features sqlite # Database migrations & query caching
+cargo install just                                             # Cross-platform command shortcut runner
+
+# 5. Optional: For cross-compiling to Linux ARM from Windows
+winget install Docker.DockerDesktop
+cargo install cross --git https://github.com/cross-rs/cross
+```
+
+### Linux Setup (Ubuntu / Debian / Raspberry Pi OS / Fedora / Arch)
+
+Run the following commands in your Linux terminal:
+
+```bash
+# 1. Install system C compiler, linker, and development headers
+# (Debian / Ubuntu / Raspberry Pi OS)
+sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev curl
+
+# (Fedora)
+# sudo dnf groupinstall "Development Tools" && sudo dnf install -y openssl-devel curl
+
+# (Arch Linux)
+# sudo pacman -S base-devel openssl curl
+
+# 2. Install Rustup via official installer
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+# 3. Source Cargo environment in current shell session
+source "$HOME/.cargo/env"
+
+# 4. Verify installation
+rustc --version
+cargo --version
+
+# 5. Optional: Install productivity utilities
+cargo install cargo-watch
+cargo install sqlx-cli --no-default-features --features sqlite
+cargo install just
+```
+
+---
+
+## 3. Server Framework & Runtime Engine
 
 ```text
 ┌────────────────────────────────────────────────────────┐
@@ -54,7 +114,7 @@ A reference specification for building an ultra-low latency, low-footprint pure 
 
 ---
 
-## 3. Data Persistence, Drivers & Serialization
+## 4. Data Persistence, Drivers & Serialization
 
 ### SQLx (Async SQL Driver & Connection Pool)
 * **Role:** Pure-Rust asynchronous database driver supporting SQLite and PostgreSQL.
@@ -85,7 +145,7 @@ A reference specification for building an ultra-low latency, low-footprint pure 
 
 ---
 
-## 4. Systems, Memory, Configuration & Telemetry Layer
+## 5. Systems, Memory, Configuration & Telemetry Layer
 
 ### Hierarchical YAML Configuration (`config` Crate)
 * **Role:** Unified, single-location configuration using YAML with automatic inheritance and cascading overrides.
@@ -126,7 +186,7 @@ A reference specification for building an ultra-low latency, low-footprint pure 
 
 ---
 
-## 5. Complete Backend `Cargo.toml` Reference
+## 6. Complete Backend `Cargo.toml` Reference
 
 ```toml
 [package]
@@ -173,7 +233,7 @@ strip = true         # Automatically strips symbols from the output binary
 
 ---
 
-## 6. Architecture & Directory Blueprint
+## 7. Architecture & Directory Blueprint
 
 ```text
 my-project/
@@ -214,7 +274,7 @@ my-project/
 
 ---
 
-## 7. Configuration Implementation Blueprint
+## 8. Configuration Implementation Blueprint
 
 ### `config/default.yaml` (Complete Baseline / Local Defaults)
 ```yaml
@@ -294,7 +354,7 @@ impl AppConfig {
 
 ---
 
-## 8. Development & Deployment Lifecycle
+## 9. Development & Deployment Lifecycle
 
 ### Why Bare-Metal Static Binary Beats Docker on Raspberry Pi
 * **Zero Container Daemon Bloat:** Running `dockerd` and `containerd` consumes **80–120 MB RAM** on a Pi before your application even boots. A native Rust binary runs in **10–25 MB RAM**.
