@@ -231,6 +231,11 @@ panic = "abort"      # Strips stack-unwind tables; produces smaller, faster bina
 strip = true         # Automatically strips symbols from the output binary
 ```
 
+> [!IMPORTANT]
+> **CRITICAL PERFORMANCE RULE: Always Run & Build in Release Mode (`--release`)**
+> * **Debug Mode (`cargo run` / `cargo build`):** Defaults to `opt-level = 0` with zero inlining, no SIMD auto-vectorization, and disabled loop unrolling. While compilation is fast, compute-intensive workloads—such as image decoding/resizing (`image` crate), audio/video metadata parsing, and cryptographic hashing—run **20x to 100x slower** (e.g., downscaling a photo takes 1,500–2,000 ms in debug vs. 15–25 ms in release).
+> * **Release Mode (`cargo run --release` / `cargo build --release`):** Activates maximum LLVM optimizations (`opt-level = 3`), LTO, and CPU vector extensions. Always run with `--release` in development scripts and production to prevent artificial bottlenecks.
+
 ---
 
 ## 7. Architecture & Directory Blueprint
@@ -364,9 +369,12 @@ impl AppConfig {
 ### Unified Task Automation (`Justfile`)
 
 ```makefile
-# Run backend locally on Windows with auto-reload
+# Run backend locally on Windows in release mode (or watch with auto-reload)
+run:
+    cargo run --release
+
 dev:
-    cargo watch -x run
+    cargo watch -x "run --release"
 
 # Full local release build
 build-local:
