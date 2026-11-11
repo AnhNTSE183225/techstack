@@ -288,3 +288,62 @@ export default function AnimatedPanelDemo() {
    * Compiles TypeScript and runs Vite production build.
    * Outputs static, pre-minified assets into `dist/` (< 25 KB total initial load).
    * Ready for static hosting, CDN, or serving directly from a lightweight reverse proxy or embedded binary.
+
+---
+
+## 10. Client-Side Finite State Machine & Reactive Contract
+
+Frontend single-page applications consuming real-time asynchronous telemetry MUST NOT rely on scattered, independent boolean flags (`isLoading`, `isPaused`, `hasError`, `isReady`, `stopped`) to derive component render states. Independent flags cause UI tearing, flickering, race conditions, and phantom background tickers (such as counters looping at `00:00`).
+
+Client-side architecture strictly mandates that stateful modules consume and mirror an **explicit, singular State Machine contract**.
+
+### 10.1 TypeScript Contract & State Discriminated Union
+
+State is defined as a strongly typed string union representing mutually exclusive lifecycle phases:
+
+```typescript
+export type EntityStatus = 
+  | 'disconnected' 
+  | 'idle' 
+  | 'loading' 
+  | 'active' 
+  | 'paused' 
+  | 'error';
+
+export interface StateMachineDTO<TData> {
+  status: EntityStatus;
+  data: TData | null;
+  timestamp: number;
+  // Legacy compatibility flags maintained strictly for backwards-compatible ingestion
+  is_active?: boolean;
+  is_loading?: boolean;
+  has_error?: boolean;
+}
+```
+
+### 10.2 Client-Side State Transition & Rendering Rules
+
+1. **Single Source of Truth (`status`):**
+   Components derive view visibility, progress bars, active spinners, and control buttons directly from the singular `status` discriminant:
+   - `'active'`: Module is actively running; progress tickers/intervals run with server timestamp offset reconciliation.
+   - `'paused'`: Execution suspended; timers freeze at their last known offset; controls switch to 'Resume'.
+   - `'loading'`: Asynchronous handshake or buffer initialization in progress; spinners active; tickers halted.
+   - `'idle'`: Standby state; active resource pointers reset to `null`; UI displays resting/standby empty state.
+   - `'disconnected'`: Network or subsystem offline; reconnect prompts displayed.
+   - `'error'`: Fault condition; error recovery/retry actions exposed.
+2. **Deterministic Teardown (Elimination of Phantom Loops):**
+   When transitioning out of `'active'` or `'paused'` into resting states (`'idle'`, `'disconnected'`, `'error'`), client components MUST immediately:
+   - Clear and cancel active animation frames and `setInterval` handles.
+   - Nullify active entity data pointers to prevent rendering stale payloads.
+3. **Resilient Backwards Compatibility & Fallback Resolvers:**
+   When ingesting telemetry from legacy backends or test mocks where `status` may be omitted, the client MUST compute an unambiguous fallback status deterministically rather than spreading unvalidated booleans:
+   ```typescript
+   export function resolveEntityStatus(dto: Partial<StateMachineDTO<unknown>>): EntityStatus {
+     if (dto.status) return dto.status;
+     if (dto.is_active === false && !dto.data) return 'idle';
+     if (dto.is_loading) return 'loading';
+     if (dto.is_active) return 'active';
+     return 'idle';
+   }
+   ```
+

@@ -419,3 +419,113 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 ```
+
+---
+
+## 10. Deterministic Finite State Machine (FSM) Architecture
+
+Distributed boolean flags (e.g. `is_active`, `is_paused`, `is_loading`, `is_connected`, `stopped`) inevitably lead to combinatorial state explosion ($2^N$ states), unreachable/phantom states, and desynchronization between concurrent tasks, drivers, and external consumers. 
+
+The architecture strictly mandates that all stateful lifecycle engines, session managers, hardware/driver wrappers, and streaming pipelines be governed by an **explicit, deterministic Finite State Machine (FSM)**.
+
+### 10.1 The Anti-Pattern: Distributed Boolean Flags
+
+```text
+❌ ANTI-PATTERN: Scattered Boolean Flags
+   is_connected: true | is_loading: false | is_playing: true | is_paused: true  <-- Invalid!
+   Result: UI tearing, phantom tickers looping at 0s, race conditions between tasks.
+
+✔ ARCHITECTURAL STANDARD: Explicit Finite State Machine
+   Status: Paused
+   Result: Single source of truth, mutually exclusive states, guaranteed invariants.
+```
+
+### 10.2 Rust FSM Pattern: Strongly-Typed Enum & Explicit Transitions
+
+State is modeled as a first-class Rust `enum` with serde serialization:
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LifecycleState {
+    Disconnected,
+    Idle,
+    Loading,
+    Active,
+    Paused,
+    Terminated,
+}
+```
+
+State transitions MUST be encapsulated in a dedicated transition method rather than raw field assignment. This guarantees validation, invariant preservation, and structured observability:
+
+```rust
+pub struct StatefulEntity {
+    pub id: String,
+    pub state: LifecycleState,
+    // Auxiliary resources (must correlate strictly with state)
+    pub active_handle: Option<ResourceHandle>,
+}
+
+impl StatefulEntity {
+    pub fn transition_to(&mut self, next: LifecycleState, reason: impl std::fmt::Display) {
+        if self.state == next {
+            return;
+        }
+
+        let old = self.state;
+        self.state = next;
+
+        // Invariant enforcement upon entering resting or terminal states
+        if matches!(next, LifecycleState::Idle | LifecycleState::Disconnected | LifecycleState::Terminated) {
+            self.active_handle = None;
+        }
+
+        tracing::info!(
+            target: "state_machine",
+            "[FSM] Entity {}: {:?} -> {:?} (Reason: {})",
+            self.id, old, next, reason
+        );
+    }
+}
+```
+
+### 10.3 State Transition Matrix & Edge Enforcement
+
+All valid state transitions must form a directed graph. Unhandled or illegal transitions must be rejected or gracefully diverted:
+
+```text
+ ┌──────────────┐      connect()      ┌──────────────┐
+ │ Disconnected │ ──────────────────> │     Idle     │ <──────────────────┐
+ └──────────────┘                     └──────────────┘                    │
+        ▲                                     │         ▲                 │
+        │ disconnect()                        │ start   │ stop / finish   │
+        │                                     ▼         │                 │
+        │                             ┌──────────────┐  │                 │
+        │                             │   Loading    │ ─┘ (on failure)    │
+        │                             └──────────────┘                    │
+        │                                     │                           │
+        │                                     │ ready                     │
+        │                                     ▼                           │
+        │      terminate() / complete ┌──────────────┐                    │
+        │ ─────────────────────────── │    Active    │ ───────────────────┤
+        │                             └──────────────┘                    │
+        │                                     │      ▲                    │
+        │                             pause() │      │ resume()           │
+        │                                     ▼      │                    │
+        │                                 ┌──────────────┐                │
+        └──────────────────────────────── │    Paused    │ ───────────────┘
+                                          └──────────────┘
+```
+
+### 10.4 Core Architectural Invariants
+
+1. **Mandatory Structured Logging:**
+   Every transition MUST emit an info-level structured log capturing the entity identifier, previous state, target state, and actionable reason for auditability and observability.
+2. **Subsystem & Driver State Reconciliation:**
+   When wrapping lower-level OS processes, network gateways, or async drivers (e.g. audio decoders, database pools, socket handles), the FSM must actively reconcile external driver events (driver exit, buffer EOF, socket drop). If the driver reports completion or error, the FSM transitions to `Idle` or `Terminated` immediately.
+3. **Atomic Teardown on Resting States:**
+   Entering `Idle`, `Disconnected`, or `Terminated` MUST atomically tear down active subprocesses, timers, and handles. Retaining active handles or cached counters in an idle state is an invariant violation.
+4. **Network Serialization Contract:**
+   All real-time SSE broadcasts, WebSocket frames, and REST DTOs MUST expose the singular `status` field serialized as a lowercase string (e.g. `"status": "idle"`). Distributed booleans are deprecated and maintained only as read-only computed properties during rolling deployments.
+
