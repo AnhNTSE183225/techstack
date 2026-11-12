@@ -1,0 +1,360 @@
+# ==============================================================================
+# Zero-Assumption Production Build Script Template (PowerShell / Windows)
+# ==============================================================================
+# Enforces:
+#   1. Pre-build service stop via .\stop.ps1 (prevents Windows OS Error 5 locks)
+#   2. Zero-Assumption Environment & Toolchain Checklist (verifies compilers,
+#      linkers, runtimes, and SDKs; auto-installs if possible or throws an
+#      actionable error with exact download instructions)
+#   3. Full Production Build (Frontend dist/, Backend --release, Mobile AOT)
+#
+# Usage:
+#   .\build.ps1                 # Full production build with pre-flight checklist
+#   .\build.ps1 -Clean          # Clean existing artifacts and reinstall dependencies
+#   .\build.ps1 -SkipFrontend   # Build backend only
+#   .\build.ps1 -SkipBackend    # Build frontend only
+#   .\build.ps1 -IncludeMobile  # Also build Flutter Android release APK
+# ==============================================================================
+
+param(
+    [switch]$Clean,
+    [switch]$SkipFrontend,
+    [switch]$SkipBackend,
+    [switch]$IncludeMobile
+)
+
+$ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$frontendDir = Join-Path $root "frontend"
+$backendDir = Join-Path $root "backend"
+$mobileDir = Join-Path $root "mobile"
+$stopScript = Join-Path $root "stop.ps1"
+
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+
+Write-Host ""
+Write-Host "==================================================================" -ForegroundColor Cyan
+Write-Host "       ZERO-ASSUMPTION PRODUCTION BUILD PIPELINE (WINDOWS)" -ForegroundColor Cyan
+Write-Host "==================================================================" -ForegroundColor Cyan
+Write-Host ""
+
+function Refresh-SessionPath {
+    $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+    $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
+    $env:Path = "$cargoBin;$userPath;$machinePath"
+}
+
+function Test-CommandExists {
+    param([string]$CommandName)
+    $cmd = Get-Command $CommandName -ErrorAction SilentlyContinue | Select-Object -First 1
+    return $null -ne $cmd
+}
+
+function Install-ViaWinget {
+    param(
+        [string]$PackageId,
+        [string]$DisplayName,
+        [string]$ExtraArgs = ""
+    )
+    if (-not (Test-CommandExists "winget")) {
+        return $false
+    }
+    Write-Host "  [⚙ AUTO-INSTALL] Installing $DisplayName ($PackageId) via winget..." -ForegroundColor Yellow
+    $argList = "install --id $PackageId --exact --silent --accept-package-agreements --accept-source-agreements $ExtraArgs"
+    $proc = Start-Process -FilePath "winget" -ArgumentList $argList -Wait -PassThru -NoNewWindow
+    Refresh-SessionPath
+    return ($proc.ExitCode -eq 0)
+}
+
+function Throw-MissingDependency {
+    param(
+        [string]$DependencyName,
+        [string]$Purpose,
+        [string]$DownloadUrl,
+        [string]$InstallCommand
+    )
+    Write-Host ""
+    Write-Host "==================================================================" -ForegroundColor Red
+    Write-Host " [✖] FATAL: MISSING REQUIRED BUILD ENVIRONMENT DEPENDENCY" -ForegroundColor Red
+    Write-Host "==================================================================" -ForegroundColor Red
+    Write-Host "  Missing Component : $DependencyName" -ForegroundColor Yellow
+    Write-Host "  Required For      : $Purpose" -ForegroundColor Gray
+    Write-Host "  Download URL      : $DownloadUrl" -ForegroundColor Cyan
+    Write-Host "  Manual Command    : $InstallCommand" -ForegroundColor Green
+    Write-Host "==================================================================" -ForegroundColor Red
+    throw "Build aborted: Missing dependency '$DependencyName'. Please install it from $DownloadUrl or run '$InstallCommand' and re-run .\build.ps1."
+}
+
+function Test-MsvcLinkerInstalled {
+    if (Test-CommandExists "cl.exe") { return $true }
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhere) {
+        $vcPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+        if ($vcPath) { return $true }
+    }
+    return $false
+}
+
+# ------------------------------------------------------------------------------
+# 0. Pre-Flight Environment & Toolchain Verification Checklist
+# ------------------------------------------------------------------------------
+Write-Host "[Phase 0] Running Zero-Assumption Toolchain & Dependency Checklist..." -ForegroundColor Cyan
+Refresh-SessionPath
+
+# 0.1 Core Git Check
+if (-not (Test-CommandExists "git")) {
+    $installed = Install-ViaWinget -PackageId "Git.Git" -DisplayName "Git SCM"
+    if (-not $installed -or -not (Test-CommandExists "git")) {
+        Throw-MissingDependency `
+            -DependencyName "Git" `
+            -Purpose "Source control and Cargo/Flutter dependency fetching" `
+            -DownloadUrl "https://git-scm.com/download/win" `
+            -InstallCommand "winget install Git.Git"
+    }
+}
+Write-Host "  [✔] Git SCM verified: $(git --version)" -ForegroundColor Green
+
+# 0.2 Backend Toolchain Checks (MSVC C++ Linker + Rustup/Cargo)
+if (-not $SkipBackend -and (Test-Path $backendDir)) {
+    if (-not (Test-MsvcLinkerInstalled)) {
+        $installed = Install-ViaWinget `
+            -PackageId "Microsoft.VisualStudio.2022.BuildTools" `
+            -DisplayName "Visual Studio 2022 C++ Build Tools (MSVC Linker)" `
+            -ExtraArgs '--override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"'
+        if (-not $installed -or -not (Test-MsvcLinkerInstalled)) {
+            Throw-MissingDependency `
+                -DependencyName "Microsoft Visual Studio C++ Build Tools (MSVC ABI Linker)" `
+                -Purpose "Compiling and linking native Rust binaries on Windows" `
+                -DownloadUrl "https://visualstudio.microsoft.com/visual-cpp-build-tools/" `
+                -InstallCommand 'winget install Microsoft.VisualStudio.2022.BuildTools --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools"'
+        }
+    }
+    Write-Host "  [✔] MSVC C/C++ Native Linker verified" -ForegroundColor Green
+
+    if (-not (Test-CommandExists "cargo") -or -not (Test-CommandExists "rustc")) {
+        $installed = Install-ViaWinget -PackageId "Rustlang.Rustup" -DisplayName "Rust Toolchain (rustup)"
+        if ((Test-CommandExists "rustup") -and -not (Test-CommandExists "cargo")) {
+            & rustup default stable
+            Refresh-SessionPath
+        }
+        if (-not (Test-CommandExists "cargo") -or -not (Test-CommandExists "rustc")) {
+            Throw-MissingDependency `
+                -DependencyName "Rust Toolchain (rustup / rustc / cargo)" `
+                -Purpose "Compiling the high-performance Rust backend (--release)" `
+                -DownloadUrl "https://rustup.rs/" `
+                -InstallCommand "winget install Rustlang.Rustup"
+        }
+    }
+    Write-Host "  [✔] Rust Toolchain verified: $(rustc --version) | $(cargo --version)" -ForegroundColor Green
+}
+
+# 0.3 Frontend Toolchain Checks (Node.js LTS + pnpm)
+if (-not $SkipFrontend -and (Test-Path $frontendDir)) {
+    if (-not (Test-CommandExists "node")) {
+        $installed = Install-ViaWinget -PackageId "OpenJS.NodeJS.LTS" -DisplayName "Node.js LTS"
+        if (-not $installed -or -not (Test-CommandExists "node")) {
+            Throw-MissingDependency `
+                -DependencyName "Node.js LTS (v20+)" `
+                -Purpose "Compiling TypeScript and bundling SolidJS/Vite production assets" `
+                -DownloadUrl "https://nodejs.org/" `
+                -InstallCommand "winget install OpenJS.NodeJS.LTS"
+        }
+    }
+    Write-Host "  [✔] Node.js verified: $(node --version)" -ForegroundColor Green
+
+    if (-not (Test-CommandExists "pnpm")) {
+        Write-Host "  [⚙ AUTO-INSTALL] Enabling pnpm via Corepack / npm..." -ForegroundColor Yellow
+        try {
+            if (Test-CommandExists "corepack") {
+                & corepack enable 2>$null
+                & corepack prepare pnpm@latest --activate 2>$null
+            }
+            if (-not (Test-CommandExists "pnpm") -and (Test-CommandExists "npm")) {
+                & npm install -g pnpm
+            }
+            Refresh-SessionPath
+        } catch {}
+
+        if (-not (Test-CommandExists "pnpm")) {
+            $installed = Install-ViaWinget -PackageId "pnpm.pnpm" -DisplayName "pnpm Package Manager"
+        }
+        if (-not (Test-CommandExists "pnpm")) {
+            Throw-MissingDependency `
+                -DependencyName "pnpm Package Manager" `
+                -Purpose "Deterministic frontend dependency locking and asset bundling" `
+                -DownloadUrl "https://pnpm.io/installation" `
+                -InstallCommand "corepack enable && corepack prepare pnpm@latest --activate"
+        }
+    }
+    Write-Host "  [✔] pnpm verified: v$(pnpm --version)" -ForegroundColor Green
+}
+
+# 0.4 Mobile Toolchain Checks (OpenJDK 17 + Flutter SDK)
+if ($IncludeMobile -or (Test-Path $mobileDir)) {
+    if ($IncludeMobile) {
+        if (-not (Test-CommandExists "java")) {
+            $installed = Install-ViaWinget -PackageId "Microsoft.OpenJDK.17" -DisplayName "Microsoft OpenJDK 17"
+            if (-not $installed -or -not (Test-CommandExists "java")) {
+                Throw-MissingDependency `
+                    -DependencyName "Java Development Kit (OpenJDK 17)" `
+                    -Purpose "Android Gradle build system and APK signing" `
+                    -DownloadUrl "https://learn.microsoft.com/en-us/java/openjdk/download" `
+                    -InstallCommand "winget install Microsoft.OpenJDK.17"
+            }
+        }
+        Write-Host "  [✔] Java JDK verified" -ForegroundColor Green
+
+        if (-not (Test-CommandExists "flutter")) {
+            $installed = Install-ViaWinget -PackageId "Google.Flutter" -DisplayName "Flutter SDK"
+            if (-not $installed -or -not (Test-CommandExists "flutter")) {
+                Throw-MissingDependency `
+                    -DependencyName "Flutter SDK & Dart AOT Toolchain" `
+                    -Purpose "Compiling 120Hz Impeller ARM64 mobile binaries" `
+                    -DownloadUrl "https://docs.flutter.dev/get-started/install/windows" `
+                    -InstallCommand "winget install Google.Flutter"
+            }
+        }
+        Write-Host "  [✔] Flutter SDK verified" -ForegroundColor Green
+    }
+}
+Write-Host ""
+
+# ------------------------------------------------------------------------------
+# 1. Stop Running Services (Unlock Windows Binaries via .\stop.ps1)
+# ------------------------------------------------------------------------------
+Write-Host "[Phase 1] Ensuring running services are stopped before compilation..." -ForegroundColor Cyan
+if (Test-Path $stopScript) {
+    & $stopScript -Quiet
+} else {
+    $processes = Get-Process -Name "backend", "ultra-engine" -ErrorAction SilentlyContinue
+    foreach ($p in $processes) {
+        if ($p.Path -and $p.Path.ToLower().StartsWith($root.ToLower())) {
+            Write-Host "  Stopping running backend process (PID $($p.Id)) to unlock executable..." -ForegroundColor Yellow
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 400
+        }
+    }
+}
+
+# ------------------------------------------------------------------------------
+# 2. Clean Artifacts (If Requested)
+# ------------------------------------------------------------------------------
+if ($Clean) {
+    Write-Host "[Phase 2] Cleaning previous build artifacts..." -ForegroundColor Yellow
+    $distDir = Join-Path $frontendDir "dist"
+    if (Test-Path $distDir) {
+        Remove-Item -Recurse -Force $distDir -ErrorAction SilentlyContinue
+        Write-Host "  Removed: $distDir" -ForegroundColor DarkGray
+    }
+}
+
+# ------------------------------------------------------------------------------
+# 3. Build Frontend (Production Bundle -> dist/)
+# ------------------------------------------------------------------------------
+if (-not $SkipFrontend -and (Test-Path $frontendDir)) {
+    Write-Host "[Phase 3] Building Frontend (Optimized Production Bundle)..." -ForegroundColor Magenta
+
+    $nodeModules = Join-Path $frontendDir "node_modules"
+    if ($Clean -or (-not (Test-Path $nodeModules))) {
+        Write-Host "  Installing frontend dependencies via pnpm..." -ForegroundColor Cyan
+        Push-Location $frontendDir
+        try {
+            & pnpm install --frozen-lockfile
+            if ($LASTEXITCODE -ne 0) {
+                & pnpm install
+                if ($LASTEXITCODE -ne 0) { throw "Failed to install frontend dependencies." }
+            }
+        } finally {
+            Pop-Location
+        }
+    }
+
+    Write-Host "  Compiling TypeScript and bundling production assets..." -ForegroundColor Cyan
+    Push-Location $frontendDir
+    try {
+        & pnpm run build
+        if ($LASTEXITCODE -ne 0) { throw "Frontend production build failed with exit code $LASTEXITCODE." }
+    } finally {
+        Pop-Location
+    }
+
+    $distIndex = Join-Path $frontendDir "dist\index.html"
+    if (-not (Test-Path $distIndex)) {
+        throw "Frontend build finished, but $distIndex was not generated."
+    }
+
+    $distAssets = Get-ChildItem (Join-Path $frontendDir "dist\assets") -File -ErrorAction SilentlyContinue
+    $totalKb = ($distAssets | Measure-Object -Property Length -Sum).Sum / 1KB
+    Write-Host ("  [✔] Frontend production bundle ready! ({0:N1} KB assets)" -f $totalKb) -ForegroundColor Green
+    Write-Host ""
+}
+
+# ------------------------------------------------------------------------------
+# 4. Build Backend (Rust Release Mode --release)
+# ------------------------------------------------------------------------------
+if (-not $SkipBackend -and (Test-Path $backendDir)) {
+    Write-Host "[Phase 4] Building Backend (Rust Release Profile: opt-level=3, LTO=fat)..." -ForegroundColor Cyan
+
+    Push-Location $backendDir
+    try {
+        if ($Clean) {
+            Write-Host "  Cleaning backend target cache..." -ForegroundColor DarkGray
+            & cargo clean
+        }
+
+        Write-Host "  Compiling Rust backend with --release..." -ForegroundColor Cyan
+        & cargo build --release
+        if ($LASTEXITCODE -ne 0) { throw "Backend release compilation failed with exit code $LASTEXITCODE." }
+    } finally {
+        Pop-Location
+    }
+
+    $exeCandidates = Get-ChildItem (Join-Path $backendDir "target\release\*.exe") -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notmatch '^build-script-' }
+    if (-not $exeCandidates) {
+        throw "Backend compilation completed, but no release .exe binary was found in $backendDir\target\release\"
+    }
+    $releaseExe = $exeCandidates | Select-Object -First 1
+    $mb = $releaseExe.Length / 1MB
+    Write-Host ("  [✔] Backend release binary ready: $($releaseExe.Name) ({0:N2} MB)" -f $mb) -ForegroundColor Green
+    Write-Host ""
+}
+
+# ------------------------------------------------------------------------------
+# 5. Build Mobile (Optional Flutter AOT Release Build)
+# ------------------------------------------------------------------------------
+if ($IncludeMobile -and (Test-Path $mobileDir)) {
+    Write-Host "[Phase 5] Building Mobile (Flutter AOT Release APK)..." -ForegroundColor Blue
+    Push-Location $mobileDir
+    try {
+        & flutter pub get
+        if ($LASTEXITCODE -ne 0) { throw "flutter pub get failed." }
+
+        & dart run build_runner build --delete-conflicting-outputs
+        if ($LASTEXITCODE -ne 0) { throw "Mobile build_runner codegen failed." }
+
+        & flutter build apk --release --split-per-abi --dart-define-from-file=config/prod.json
+        if ($LASTEXITCODE -ne 0) { throw "Flutter release APK build failed." }
+    } finally {
+        Pop-Location
+    }
+    Write-Host "  [✔] Mobile ARM64 Release APK built successfully!" -ForegroundColor Green
+    Write-Host ""
+}
+
+# ------------------------------------------------------------------------------
+# Summary
+# ------------------------------------------------------------------------------
+$sw.Stop()
+$elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
+
+Write-Host "==================================================================" -ForegroundColor Green
+Write-Host "       PRODUCTION BUILD COMPLETED SUCCESSFULLY IN ${elapsed}s!" -ForegroundColor Green
+Write-Host "==================================================================" -ForegroundColor Green
+Write-Host "  Start Application : .\start.ps1" -ForegroundColor Yellow
+Write-Host "  Stop Application  : .\stop.ps1" -ForegroundColor Yellow
+Write-Host ""

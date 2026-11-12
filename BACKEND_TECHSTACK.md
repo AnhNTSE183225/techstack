@@ -242,8 +242,15 @@ strip = true         # Automatically strips symbols from the output binary
 
 ```text
 my-project/
+├── build.ps1                  # [Windows] Zero-Assumption checklist + Production Build
+├── start.ps1                  # [Windows] 100% Production Runner (writes .pids)
+├── stop.ps1                   # [Windows] Deterministic PID tree stopper (reads .pids)
+├── build.sh                   # [Linux] Zero-Assumption checklist + Production Build
+├── start.sh                   # [Linux] 100% Production Runner (writes .pids)
+├── stop.sh                    # [Linux] Deterministic PID tree stopper (reads .pids)
+├── .pids                      # [Runtime] Active process IDs persisted by start script
 ├── Cargo.toml
-├── Justfile                   # Cross-platform task automation (dev, build, deploy)
+├── Justfile                   # Optional CLI task shortcuts
 ├── sqlx-data.json             # Cached queries for offline cross-compilation
 │
 ├── config/                    # [Configurations] All YAML files in ONE place
@@ -359,26 +366,44 @@ impl AppConfig {
 
 ---
 
-## 9. Development & Deployment Lifecycle
+## 9. Development, Build/Start/Stop Separation & Deployment Lifecycle
+
+### Mandatory 6-Script Lifecycle Architecture (`build`, `start`, `stop` for `.ps1` & `.sh`)
+
+Every project MUST implement the **Build / Start / Stop Separation Architecture** (see [build-start-separation/SKILL.md](file:///C:/GIT/TECHSTACK/build-start-separation/SKILL.md)) across both **Windows (`build.ps1`, `start.ps1`, `stop.ps1`)** and **Linux (`build.sh`, `start.sh`, `stop.sh`)**:
+
+1. **Zero-Assumption Build Script (`build.ps1` / `build.sh`):**
+   * Assumes the host machine has **zero pre-installed compilers or dependencies**.
+   * Executes a pre-flight checklist verifying Git, the native C/C++ linker (`MSVC VC.Tools.x86.x64` on Windows; `build-essential`, `pkg-config`, `libssl-dev` on Linux), and the Rust toolchain (`rustup`, `rustc`, `cargo`).
+   * Automatically installs missing dependencies where supported (`winget` / `rustup` / `apt` / `dnf` / `pacman`); if a dependency cannot be auto-installed, throws an explicit fatal error with the download URL and manual install command.
+   * Calls `stop.ps1` / `stop.sh` prior to compiling to unlock running `.exe` binaries on Windows (preventing `OS Error 5: Access is denied`), then compiles `cargo build --release`.
+2. **100% Production Start Script (`start.ps1` / `start.sh`):**
+   * **Never runs `cargo run`** during startup. Executes the pre-compiled `target/release/<binary>` directly (auto-invoking `build` only if the binary is missing).
+   * Persists the active process ID (`backend_pid`, `frontend_pid`, ports, timestamp) to `<repo-root>/.pids` for deterministic lifecycle management.
+3. **Deterministic PID Stop Script (`stop.ps1` / `stop.sh`):**
+   * Reads `<repo-root>/.pids`, kills the exact process tree by PID (`taskkill /PID <id> /T /F` on Windows; `pkill -P <id>` + `kill` on Linux), sweeps fallback ports, and removes `.pids`.
+
+👉 Reference Templates: [build.ps1.template](file:///C:/GIT/TECHSTACK/build-start-separation/examples/build.ps1.template), [start.ps1.template](file:///C:/GIT/TECHSTACK/build-start-separation/examples/start.ps1.template), [stop.ps1.template](file:///C:/GIT/TECHSTACK/build-start-separation/examples/stop.ps1.template), [build.sh.template](file:///C:/GIT/TECHSTACK/build-start-separation/examples/build.sh.template), [start.sh.template](file:///C:/GIT/TECHSTACK/build-start-separation/examples/start.sh.template), [stop.sh.template](file:///C:/GIT/TECHSTACK/build-start-separation/examples/stop.sh.template).
 
 ### Why Bare-Metal Static Binary Beats Docker on Raspberry Pi
 * **Zero Container Daemon Bloat:** Running `dockerd` and `containerd` consumes **80–120 MB RAM** on a Pi before your application even boots. A native Rust binary runs in **10–25 MB RAM**.
 * **Protects SD Cards:** Eliminates continuous Docker logging, layer caches, and overlay2 storage wear on flash storage.
-* **Instant Start:** Managed by `systemd`, the binary starts in **< 20 milliseconds**.
+* **Instant Start:** Managed by `systemd` or `start.sh`, the binary starts in **< 20 milliseconds**.
 
-### Unified Task Automation (`Justfile`)
+### Unified Cross-Compilation & Task Automation (`Justfile`)
 
 ```makefile
-# Run backend locally on Windows in release mode (or watch with auto-reload)
-run:
-    cargo run --release
+# Build full production artifacts via Zero-Assumption build script
+build:
+    powershell -ExecutionPolicy Bypass -File ./build.ps1
 
-dev:
-    cargo watch -x "run --release"
+# Start pre-compiled release binary (writes .pids)
+start:
+    powershell -ExecutionPolicy Bypass -File ./start.ps1
 
-# Full local release build
-build-local:
-    cargo build --release
+# Stop running services deterministically by .pids
+stop:
+    powershell -ExecutionPolicy Bypass -File ./stop.ps1
 
 # Prepare offline SQLx cache (required before cross-compilation)
 sqlx-prepare:

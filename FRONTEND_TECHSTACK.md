@@ -196,23 +196,43 @@ frontend/
 
 ---
 
-## 7. Build & Proxy Configuration (`vite.config.ts`)
+## 7. Build & Production Preview Proxy Configuration (`vite.config.ts`)
 
-Configured for local development with automatic API proxying to the Rust backend (`http://127.0.0.1:8080`) to eliminate CORS configuration during development.
+Configured for **100% production preview execution** (`pnpm run preview` via `start.ps1` / `start.sh`) with an unbounded `keepAliveAgent` (`maxSockets: Infinity`) to prevent reverse-proxy socket queueing on concurrent API/streaming requests:
 
 ```typescript
+import http from "node:http";
 import { defineConfig } from "vite";
 import solidPlugin from "vite-plugin-solid";
+
+// Optimize connection pool for production preview mode
+const keepAliveAgent = new http.Agent({
+  keepAlive: true,
+  maxSockets: Infinity, // Prevent proxy queuing deadlocks on rich media/streaming
+  maxFreeSockets: 64,
+  timeout: 30000,
+});
 
 export default defineConfig({
   plugins: [solidPlugin()],
   server: {
-    port: 3000,
-    // Proxy API calls directly to the local Rust Axum backend
+    port: 5173,
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8080",
         changeOrigin: true,
+      },
+    },
+  },
+  preview: {
+    host: true,
+    port: 5173,
+    // Proxy API calls directly to the local Rust Axum release binary
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:8080",
+        changeOrigin: true,
+        agent: keepAliveAgent,
       },
     },
   },
@@ -271,23 +291,18 @@ export default function AnimatedPanelDemo() {
 
 ---
 
-## 9. Development & Production Build Lifecycle
+## 9. Build / Start / Stop Separation Lifecycle
 
-1. **Local Development (Windows & Linux):**
-   ```bash
-   pnpm install
-   pnpm dev
-   ```
-   * Starts Vite at `http://localhost:3000`.
-   * Automatically proxies `/api/*` requests to the Rust backend running on `http://127.0.0.1:8080`.
+In accordance with [build-start-separation/SKILL.md](file:///C:/GIT/TECHSTACK/build-start-separation/SKILL.md), the application MUST NEVER be launched via `pnpm dev` / `vite` dev mode for standard operation or testing, as on-demand module transpilation causes a 5–15s blank white screen. Instead, every project uses the **6 mandatory root scripts** (`build.ps1`, `start.ps1`, `stop.ps1` on Windows; `build.sh`, `start.sh`, `stop.sh` on Linux):
 
-2. **Production Build:**
-   ```bash
-   pnpm build
-   ```
-   * Compiles TypeScript and runs Vite production build.
-   * Outputs static, pre-minified assets into `dist/` (< 25 KB total initial load).
-   * Ready for static hosting, CDN, or serving directly from a lightweight reverse proxy or embedded binary.
+1. **Zero-Assumption Build (`.\build.ps1` / `./build.sh`):**
+   * Runs a pre-flight checklist assuming a bare system: checks for Node.js LTS and `pnpm`, auto-installing them via `winget` / `corepack` / `apt` if possible, or throwing an explicit fatal error with download instructions if missing.
+   * Calls `stop.ps1` / `stop.sh` first, installs `node_modules` if needed, compiles TypeScript (`tsc`), and bundles static assets (`vite build` -> `dist/` < 25 KB gzipped).
+2. **100% Optimized Production Start (`.\start.ps1` / `./start.sh`):**
+   * Verifies `dist/index.html` exists (auto-running `build` only if missing), launches `pnpm run preview` serving the pre-minified `dist/` bundle alongside the Rust release binary, and stores `frontend_pid` & `backend_pid` in `<repo-root>/.pids`.
+   * Renders in the browser in **< 500 milliseconds** with zero transpilation lag.
+3. **Deterministic PID Stop (`.\stop.ps1` / `./stop.sh`):**
+   * Reads `<repo-root>/.pids`, terminates the stored `frontend_pid` and `backend_pid` process trees cleanly, sweeps fallback ports, and deletes `.pids`.
 
 ---
 
@@ -346,4 +361,78 @@ export interface StateMachineDTO<TData> {
      return 'idle';
    }
    ```
+
+---
+
+## 11. Responsive UI Audit & Visual Design Standards (`MusicBotUI` Pattern)
+
+All frontend applications built with this stack MUST adhere to the automated **Responsive UI Audit & Visual Design Standards** defined in [responsive-ui-audit/SKILL.md](file:///C:/GIT/TECHSTACK/responsive-ui-audit/SKILL.md) and [workflow-guide.md](file:///C:/GIT/TECHSTACK/responsive-ui-audit/references/workflow-guide.md).
+
+### 11.1 Mandatory Visual Design Patterns
+
+1. **Sliding Active Tab Indicator (The Magic Pill Pattern):**
+   * Never use abrupt background color toggles on click or un-transitioned hover flashes (see [hover-animation-issue.png](file:///C:/GIT/TECHSTACK/responsive-ui-audit/resources/hover-animation-issue.png)).
+   * Position an absolute pill indicator beneath tab labels that dynamically transitions via `transform: translateX(...)` and `width` using Apple/iOS-style spring easing (`cubic-bezier(0.16, 1, 0.3, 1)`, `300ms`), paired with `transition-colors duration-200 ease-out` and `hover:bg-white/[0.04]` on buttons (see [sliding-tab-fixed.png](file:///C:/GIT/TECHSTACK/responsive-ui-audit/resources/sliding-tab-fixed.png)).
+2. **Odd-Numbered Grid Balancing (Dynamic Flex Stretch):**
+   * Never use rigid 2-column grids (`sm:grid-cols-2`) for odd-numbered card collections (e.g., 5 items), which leaves an empty void in the bottom-right (see [uneven-items-issue.png](file:///C:/GIT/TECHSTACK/responsive-ui-audit/resources/uneven-items-issue.png)).
+   * Use `flex flex-wrap items-stretch gap-2.5` on the container and `flex-1 min-w-[210px]` on each card so items automatically expand to fill 100% of every row (e.g., 3 + 2 on tablet, 5 across on desktop; see [balanced-providers-fixed.png](file:///C:/GIT/TECHSTACK/responsive-ui-audit/resources/balanced-providers-fixed.png)).
+3. **Mandatory Custom Scroller (`src/index.css`):**
+   * Never allow default white/gray Chromium scrollbars on dark-themed scroll containers (see [bad-default-scrollbar.png](file:///C:/GIT/TECHSTACK/responsive-ui-audit/resources/bad-default-scrollbar.png)). Always include the 5px translucent rounded scrollbar and `.no-scrollbar` utility in `src/index.css`:
+
+```css
+/* Custom sleek scrollbar matching MusicBotUI pattern */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 9999px;
+  transition: background 0.2s ease;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.45);
+}
+
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.no-scrollbar {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none !important;
+}
+```
+
+### 11.2 Automated 8-Viewport Zero-Overflow Audit Workflow
+
+Before concluding any UI feature or layout change, verify zero horizontal overflow (`scrollWidth <= clientWidth`) across all 8 standard viewports (`375x667`, `390x844`, `844x390`, `768x1024`, `1024x768`, `1366x768`, `1920x1080`, `2560x1080`):
+
+1. **Capture Multi-Viewport Screenshots:**
+   ```powershell
+   python responsive-ui-audit/scripts/capture_responsive.py --url http://localhost:5173 --output screenshots/responsive
+   ```
+2. **Pinpoint Overflowing DOM Nodes (`scrollWidth > clientWidth`):**
+   ```powershell
+   python responsive-ui-audit/scripts/detect_overflows.py --url http://localhost:5173
+   ```
+   *(Script exits with code `0` only when `total_overflows == 0` across every viewport and navigation tab.)*
+
 

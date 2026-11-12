@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# Zero-Assumption Production Build Script Template (Bash / Linux / macOS)
+# ==============================================================================
+# Enforces:
+#   1. Pre-build service stop via ./stop.sh
+#   2. Zero-Assumption Environment & Toolchain Checklist (verifies compilers,
+#      linkers, OpenSSL headers, Rust, Node.js, pnpm, Java/Flutter; auto-installs
+#      where possible or throws an actionable error with download instructions)
+#   3. Full Production Build (Frontend dist/, Backend --release, Mobile AOT)
+#
+# Usage:
+#   ./build.sh                  # Full production build with pre-flight checklist
+#   ./build.sh --clean          # Clean existing artifacts and reinstall dependencies
+#   ./build.sh --skip-frontend  # Build backend only
+#   ./build.sh --skip-backend   # Build frontend only
+#   ./build.sh --include-mobile # Also build Flutter Android release APK
+# ==============================================================================
+
+set -euo pipefail
+
+CLEAN=0
+SKIP_FRONTEND=0
+SKIP_BACKEND=0
+INCLUDE_MOBILE=0
+
+for arg in "$@"; do
+    case "$arg" in
+        --clean)          CLEAN=1 ;;
+        --skip-frontend)  SKIP_FRONTEND=1 ;;
+        --skip-backend)   SKIP_BACKEND=1 ;;
+        --include-mobile) INCLUDE_MOBILE=1 ;;
+    esac
+done
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FRONTEND_DIR="$ROOT_DIR/frontend"
+BACKEND_DIR="$ROOT_DIR/backend"
+MOBILE_DIR="$ROOT_DIR/mobile"
+STOP_SCRIPT="$ROOT_DIR/stop.sh"
+
+# Source cargo/nvm paths if installed in user home
+[ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
+export PATH="$HOME/.cargo/bin:$HOME/.local/share/pnpm:$PATH"
+
+throw_missing_dep() {
+    local dep_name="$1"
+    local purpose="$2"
+    local download_url="$3"
+    local install_cmd="$4"
+    echo ""
+    echo "=================================================================="
+    echo " [✖] FATAL: MISSING REQUIRED BUILD ENVIRONMENT DEPENDENCY"
+    echo "=================================================================="
+    echo "  Missing Component : $dep_name"
+    echo "  Required For      : $purpose"
+    echo "  Download URL      : $download_url"
+    echo "  Manual Command    : $install_cmd"
+    echo "=================================================================="
+    exit 1
+}
+
+try_pkg_install() {
+    local apt_pkgs="$1"
+    local dnf_pkgs="$2"
+    local pacman_pkgs="$3"
+    if ! command -v sudo &>/dev/null; then
+        return 1
+    fi
+    if command -v apt-get &>/dev/null; then
+        echo "  [⚙ AUTO-INSTALL] Installing via apt-get: $apt_pkgs..."
+        sudo apt-get update -y && sudo apt-get install -y $apt_pkgs && return 0
+    elif command -v dnf &>/dev/null; then
+        echo "  [⚙ AUTO-INSTALL] Installing via dnf: $dnf_pkgs..."
+        sudo dnf install -y $dnf_pkgs && return 0
+    elif command -v pacman &>/dev/null; then
+        echo "  [⚙ AUTO-INSTALL] Installing via pacman: $pacman_pkgs..."
+        sudo pacman -Sy --noconfirm $pacman_pkgs && return 0
+    fi
+    return 1
+}
+
+echo ""
+echo "=================================================================="
+echo "       ZERO-ASSUMPTION PRODUCTION BUILD PIPELINE (LINUX)"
+echo "=================================================================="
+echo ""
+
+# ------------------------------------------------------------------------------
+# 0. Pre-Flight Environment & Toolchain Verification Checklist
+# ------------------------------------------------------------------------------
+echo "[Phase 0] Running Zero-Assumption Toolchain & Dependency Checklist..."
+
+# 0.1 Core Utilities (curl, git)
+if ! command -v curl &>/dev/null || ! command -v git &>/dev/null; then
+    try_pkg_install "curl git ca-certificates" "curl git ca-certificates" "curl git ca-certificates" || true
+    if ! command -v curl &>/dev/null || ! command -v git &>/dev/null; then
+        throw_missing_dep \
+            "curl & git" \
+            "Fetching toolchains and repository dependencies" \
+            "https://git-scm.com/downloads" \
+            "sudo apt update && sudo apt install -y curl git"
+    fi
+fi
+echo "  [✔] curl & git verified: $(git --version)"
+
+# 0.2 Backend Toolchain Checks (C Compiler/Linker, pkg-config, OpenSSL dev, Rustup/Cargo)
+if [ "$SKIP_BACKEND" -eq 0 ] && [ -d "$BACKEND_DIR" ]; then
+    if ! command -v cc &>/dev/null || ! command -v pkg-config &>/dev/null; then
+        try_pkg_install "build-essential pkg-config libssl-dev" "gcc gcc-c++ make pkgconfig openssl-devel" "base-devel pkgconf openssl" || true
+        if ! command -v cc &>/dev/null || ! command -v pkg-config &>/dev/null; then
+            throw_missing_dep \
+                "C Compiler / Linker (build-essential, pkg-config, libssl-dev)" \
+                "Linking native Rust executables and system libraries" \
+                "https://doc.rust-lang.org/book/ch01-01-installation.html" \
+                "sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev"
+        fi
+    fi
+    echo "  [✔] System C Compiler & pkg-config verified"
+
+    if ! command -v cargo &>/dev/null || ! command -v rustc &>/dev/null; then
+        echo "  [⚙ AUTO-INSTALL] Installing Rust toolchain via official rustup.rs..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y || true
+        [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
+        export PATH="$HOME/.cargo/bin:$PATH"
+
+        if ! command -v cargo &>/dev/null || ! command -v rustc &>/dev/null; then
+            throw_missing_dep \
+                "Rust Toolchain (rustup / rustc / cargo)" \
+                "Compiling the Rust backend in --release mode" \
+                "https://rustup.rs/" \
+                "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+        fi
+    fi
+    echo "  [✔] Rust Toolchain verified: $(rustc --version) | $(cargo --version)"
+fi
+
+# 0.3 Frontend Toolchain Checks (Node.js LTS + pnpm)
+if [ "$SKIP_FRONTEND" -eq 0 ] && [ -d "$FRONTEND_DIR" ]; then
+    if ! command -v node &>/dev/null; then
+        try_pkg_install "nodejs npm" "nodejs npm" "nodejs npm" || true
+        if ! command -v node &>/dev/null; then
+            throw_missing_dep \
+                "Node.js LTS (v20+)" \
+                "Compiling TypeScript and bundling SolidJS/Vite production assets" \
+                "https://nodejs.org/en/download" \
+                "curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt install -y nodejs"
+        fi
+    fi
+    echo "  [✔] Node.js verified: $(node --version)"
+
+    if ! command -v pnpm &>/dev/null; then
+        echo "  [⚙ AUTO-INSTALL] Enabling pnpm via Corepack / npm..."
+        if command -v corepack &>/dev/null; then
+            corepack enable 2>/dev/null || sudo corepack enable 2>/dev/null || true
+            corepack prepare pnpm@latest --activate 2>/dev/null || true
+        fi
+        if ! command -v pnpm &>/dev/null && command -v npm &>/dev/null; then
+            npm install -g pnpm 2>/dev/null || sudo npm install -g pnpm 2>/dev/null || true
+        fi
+        if ! command -v pnpm &>/dev/null; then
+            throw_missing_dep \
+                "pnpm Package Manager" \
+                "Deterministic frontend dependency locking and asset bundling" \
+                "https://pnpm.io/installation" \
+                "sudo corepack enable && corepack prepare pnpm@latest --activate"
+        fi
+    fi
+    echo "  [✔] pnpm verified: v$(pnpm --version)"
+fi
+
+# 0.4 Mobile Toolchain Checks (OpenJDK 17 + Flutter SDK)
+if [ "$INCLUDE_MOBILE" -eq 1 ] && [ -d "$MOBILE_DIR" ]; then
+    if ! command -v java &>/dev/null; then
+        try_pkg_install "openjdk-17-jdk" "java-17-openjdk-devel" "jdk17-openjdk" || true
+        if ! command -v java &>/dev/null; then
+            throw_missing_dep \
+                "Java Development Kit (OpenJDK 17)" \
+                "Android Gradle build system and APK signing" \
+                "https://adoptium.net/" \
+                "sudo apt install -y openjdk-17-jdk"
+        fi
+    fi
+    echo "  [✔] Java JDK verified"
+
+    if ! command -v flutter &>/dev/null; then
+        throw_missing_dep \
+            "Flutter SDK & Dart AOT Toolchain" \
+            "Compiling 120Hz Impeller ARM64 mobile binaries" \
+            "https://docs.flutter.dev/get-started/install/linux" \
+            "git clone https://github.com/flutter/flutter.git -b stable \$HOME/flutter && export PATH=\"\$PATH:\$HOME/flutter/bin\""
+    fi
+    echo "  [✔] Flutter SDK verified"
+fi
+echo ""
+
+# ------------------------------------------------------------------------------
+# 1. Stop Running Services (via ./stop.sh)
+# ------------------------------------------------------------------------------
+echo "[Phase 1] Ensuring running services are stopped before compilation..."
+if [ -f "$STOP_SCRIPT" ]; then
+    bash "$STOP_SCRIPT" --quiet || true
+fi
+
+# ------------------------------------------------------------------------------
+# 2. Clean Artifacts (If Requested)
+# ------------------------------------------------------------------------------
+if [ "$CLEAN" -eq 1 ]; then
+    echo "[Phase 2] Cleaning previous build artifacts..."
+    rm -rf "$FRONTEND_DIR/dist"
+fi
+
+# ------------------------------------------------------------------------------
+# 3. Build Frontend (Production Bundle -> dist/)
+# ------------------------------------------------------------------------------
+if [ "$SKIP_FRONTEND" -eq 0 ] && [ -d "$FRONTEND_DIR" ]; then
+    echo "[Phase 3] Building Frontend (Optimized Production Bundle)..."
+    cd "$FRONTEND_DIR"
+    if [ "$CLEAN" -eq 1 ] || [ ! -d "node_modules" ]; then
+        echo "  Installing frontend dependencies via pnpm..."
+        pnpm install --frozen-lockfile || pnpm install
+    fi
+    echo "  Compiling TypeScript and bundling production assets..."
+    pnpm run build
+
+    if [ ! -f "$FRONTEND_DIR/dist/index.html" ]; then
+        echo "Error: Frontend build finished, but dist/index.html was not generated!"
+        exit 1
+    fi
+    echo "  [✔] Frontend production bundle ready!"
+    echo ""
+fi
+
+# ------------------------------------------------------------------------------
+# 4. Build Backend (Rust Release Mode --release)
+# ------------------------------------------------------------------------------
+if [ "$SKIP_BACKEND" -eq 0 ] && [ -d "$BACKEND_DIR" ]; then
+    echo "[Phase 4] Building Backend (Rust Release Profile: opt-level=3, LTO=fat)..."
+    cd "$BACKEND_DIR"
+    if [ "$CLEAN" -eq 1 ]; then
+        cargo clean
+    fi
+    cargo build --release
+    echo "  [✔] Backend release binary ready!"
+    echo ""
+fi
+
+# ------------------------------------------------------------------------------
+# 5. Build Mobile (Optional Flutter AOT Release Build)
+# ------------------------------------------------------------------------------
+if [ "$INCLUDE_MOBILE" -eq 1 ] && [ -d "$MOBILE_DIR" ]; then
+    echo "[Phase 5] Building Mobile (Flutter AOT Release APK)..."
+    cd "$MOBILE_DIR"
+    flutter pub get
+    dart run build_runner build --delete-conflicting-outputs
+    flutter build apk --release --split-per-abi --dart-define-from-file=config/prod.json
+    echo "  [✔] Mobile ARM64 Release APK built successfully!"
+    echo ""
+fi
+
+echo "=================================================================="
+echo "       PRODUCTION BUILD COMPLETED SUCCESSFULLY!"
+echo "=================================================================="
+echo "  Start Application : ./start.sh"
+echo "  Stop Application  : ./stop.sh"
+echo ""
