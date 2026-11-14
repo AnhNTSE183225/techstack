@@ -726,3 +726,22 @@ To maintain visual and geometric parity with [FRONTEND_TECHSTACK.md](file:///C:/
 4. **Sleek Translucent Scrollbars (`RawScrollbar`):**
    * Configure global `ScrollbarThemeData` with `thickness: WidgetStatePropertyAll(4.0)`, `radius: const Radius.circular(9999)`, and `thumbColor: WidgetStatePropertyAll(Color(0x4094A3B8))` to match the 5px translucent `MusicBotUI` scroller.
 
+---
+
+## 12. SOLID Architecture Principles in Flutter & Dart AOT
+
+In accordance with [solid-architecture/SKILL.md](file:///C:/GIT/TECHSTACK/solid-architecture/SKILL.md) and [solid-across-stacks.md](file:///C:/GIT/TECHSTACK/solid-architecture/references/solid-across-stacks.md), all Flutter & Dart code MUST enforce the five SOLID principles using compile-time static types (zero `dart:mirrors` reflection):
+
+1. **Single Responsibility Principle (SRP):**
+   * Strictly separate **Leaf Reactive Widgets** (`lib/components/`), **Screen Layouts** (`lib/pages/`), **Signal & FSM Controllers** (`lib/stores/`), and **Drift SQLite / Dio Data Gateways** (`lib/core/`).
+   * Widgets MUST NEVER execute raw Dio HTTP requests or Drift SQL queries directly inside `build()` or button callbacks.
+2. **Open/Closed Principle (OCP):**
+   * Extend UI and domain behaviors via Dart 3 `sealed class` pattern matching, builder callbacks (`WidgetBuilder`), and strategy interfaces without modifying existing tested controllers.
+3. **Liskov Substitution Principle (LSP):**
+   * Offline SQLite (`Drift`) repositories and live network (`Dio`) repositories implementing the same `abstract interface class` MUST uphold identical `EntityStatus` FSM transitions and error contracts.
+4. **Interface Segregation Principle (ISP):**
+   * Leaf `Watch` widgets must accept only the specific `ReadonlySignal<T>` or narrow callback they require—never an entire monolithic controller.
+5. **Dependency Inversion Principle (DIP):**
+   * `StatefulEntityController` and domain stores depend on Dart 3 `abstract interface class` contracts injected via constructors and compile-time `AppConfig` constants (`--dart-define-from-file`)—never on hardcoded URLs or concrete `Dio`/`AppDatabase` singletons.
+
+

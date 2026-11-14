@@ -435,4 +435,23 @@ Before concluding any UI feature or layout change, verify zero horizontal overfl
    ```
    *(Script exits with code `0` only when `total_overflows == 0` across every viewport and navigation tab.)*
 
+---
+
+## 12. SOLID Architecture Principles in SolidJS & TypeScript
+
+In accordance with [solid-architecture/SKILL.md](file:///C:/GIT/TECHSTACK/solid-architecture/SKILL.md) and [solid-across-stacks.md](file:///C:/GIT/TECHSTACK/solid-architecture/references/solid-across-stacks.md), all frontend code MUST enforce the five SOLID principles with **0 KB runtime overhead**:
+
+1. **Single Responsibility Principle (SRP):**
+   * Separate **Presentational Components** (`src/components/`), **Route Containers** (`src/pages/`), **Reactive Signal Stores & FSMs** (`src/stores/`), and **Typed HTTP/SSE Clients** (`src/api/`).
+   * UI components MUST NEVER execute raw `fetch()` calls or mutate global state directly inside JSX event handlers.
+2. **Open/Closed Principle (OCP):**
+   * Design reusable UI primitives (`Button`, `AnimatedPanel`, `Card`) to be open for extension via composition (`props.children`, slot props, and variant maps) without modifying base component internals.
+3. **Liskov Substitution Principle (LSP):**
+   * Any data source or store consuming `StateMachineDTO<T>` (live SSE stream, REST poller, or mock fixture) MUST honor the exact same `EntityStatus` transition contract and deterministic teardown rules.
+4. **Interface Segregation Principle (ISP):**
+   * Never pass an entire global store object into a leaf component. Define narrow TypeScript prop interfaces containing **only** the specific signal accessors (`Accessor<T>`) or primitive values that the component renders.
+5. **Dependency Inversion Principle (DIP):**
+   * Reactive stores in `src/stores/` depend on typed API client interfaces (`src/api/`) and environment configs—never on hardcoded URLs or raw `window.fetch` implementation details.
+
+
 

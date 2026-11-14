@@ -554,3 +554,22 @@ All valid state transitions must form a directed graph. Unhandled or illegal tra
 4. **Network Serialization Contract:**
    All real-time SSE broadcasts, WebSocket frames, and REST DTOs MUST expose the singular `status` field serialized as a lowercase string (e.g. `"status": "idle"`). Distributed booleans are deprecated and maintained only as read-only computed properties during rolling deployments.
 
+---
+
+## 11. Zero-Cost SOLID Architecture Principles in Rust
+
+In accordance with [solid-architecture/SKILL.md](file:///C:/GIT/TECHSTACK/solid-architecture/SKILL.md) and [solid-across-stacks.md](file:///C:/GIT/TECHSTACK/solid-architecture/references/solid-across-stacks.md), AI agents and developers MUST enforce all five SOLID principles in Rust using **zero-cost compile-time abstractions**:
+
+1. **Single Responsibility Principle (SRP):**
+   * Strictly separate **Transport Handlers** (`src/handlers/`), **Domain Services & FSM Orchestration** (`src/services/`), **Persistence Repositories** (`src/repositories/`), and **DTOs/Validators** (`src/models/`).
+   * Axum route handlers MUST NEVER contain raw `sqlx::query!` calls or multi-step business calculations.
+2. **Open/Closed Principle (OCP):**
+   * Extend system capabilities (e.g., new notification channels, storage engines, or stream processors) by implementing shared Rust `trait`s or exhaustive `enum` dispatch rather than modifying existing core pipelines with fragile `if/else` chains.
+3. **Liskov Substitution Principle (LSP):**
+   * Every implementation of a repository or driver trait (e.g., `SqliteItemRepo`, `PostgresItemRepo`, or `InMemoryMockRepo`) MUST uphold identical `Result<T, AppError>` error semantics and FSM state invariants.
+4. **Interface Segregation Principle (ISP):**
+   * Keep traits narrow and role-specific (e.g., split `TelemetryReader` from `TelemetryWriter`) so read-only handlers or background tasks never depend on mutation methods they do not invoke.
+5. **Dependency Inversion Principle (DIP):**
+   * Domain services depend on **Rust Traits** (`<R: ItemRepository>`) and strongly-typed `AppConfig` (`config/default.yaml`)—never on hardcoded file paths, connection strings, or concrete third-party driver structs. Prefer monomorphized generics (`<R: Trait>`) over `Box<dyn Trait>` on hot paths to eliminate heap allocation and vtable indirection.
+
+
