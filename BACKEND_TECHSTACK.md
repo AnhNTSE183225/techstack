@@ -228,7 +228,7 @@ opt-level = 3        # Maximum optimizations
 lto = "fat"          # Link-Time Optimization across all crates
 codegen-units = 1    # Sacrifices compile speed for better optimization passes
 panic = "abort"      # Strips stack-unwind tables; produces smaller, faster binaries
-strip = true         # Automatically strips symbols from the output binary
+strip = "debuginfo"  # Strips heavy DWARF debug info while keeping symbol names for crash backtraces
 ```
 
 > [!IMPORTANT]
@@ -435,7 +435,10 @@ WorkingDirectory=/opt/myapp
 ExecStart=/opt/myapp/ultra-engine --config-override config/prod.yaml
 Restart=always
 RestartSec=5
+StandardOutput=journal
+StandardError=journal
 Environment=RUST_LOG=info
+Environment=RUST_BACKTRACE=1
 
 # Hardening
 ProtectSystem=full
@@ -571,5 +574,103 @@ In accordance with [solid-architecture/SKILL.md](file:///C:/GIT/TECHSTACK/solid-
    * Keep traits narrow and role-specific (e.g., split `TelemetryReader` from `TelemetryWriter`) so read-only handlers or background tasks never depend on mutation methods they do not invoke.
 5. **Dependency Inversion Principle (DIP):**
    * Domain services depend on **Rust Traits** (`<R: ItemRepository>`) and strongly-typed `AppConfig` (`config/default.yaml`)—never on hardcoded file paths, connection strings, or concrete third-party driver structs. Prefer monomorphized generics (`<R: Trait>`) over `Box<dyn Trait>` on hot paths to eliminate heap allocation and vtable indirection.
+
+---
+
+## 12. Production Observability, Decoupled Log Aggregation & Crash Diagnostics
+
+Applications MUST NEVER host or serve their own log endpoints. If a service fails to parse config, panics at boot, deadlocks, or is OOM-killed, an in-app logging route dies with it. Furthermore, flat `nohup > app.log` redirection lacks guaranteed OS timestamps on non-logger output (panics, linker/OS faults, child process `stderr`) and provides no structured query interface for diagnosing latency regressions.
+
+The stack mandates a **100% self-hosted, locally stored, decoupled observability pipeline** designed for minimal RAM/SD-card overhead while giving both human operators (Web UI) and AI diagnostic agents (HTTP LogsQL API) full visibility into crashes and performance bottlenecks.
+
+### 12.1 Pipeline Topology (Zero Third-Party SaaS)
+
+```text
+┌──────────────────────────────┐     stdout / stderr (OS fds)     ┌──────────────────────────────┐
+│  Application Binary (Rust)   │ ───────────────────────────────> │  systemd-journald (Kernel)   │
+│  • tracing JSON to stdout    │   • Captures boot/panic/child    │  • Microsecond timestamps    │
+│  • RUST_BACKTRACE=1          │   • Captures exit codes & OOM    │  • Native disk/retention cap │
+└──────────────────────────────┘                                  └──────────────────────────────┘
+                                                                                 │
+                                                     systemd-journal-upload      │ (/insert/journald)
+                                                                                 ▼
+┌──────────────────────────────┐     HTTP / Tailscale Only        ┌──────────────────────────────┐
+│  Humans & Diagnostic Agents  │ <──────────────────────────────> │  VictoriaLogs (Standalone)   │
+│  • Browser: /select/vmui/    │   • Completely separate service  │  • Single Go binary, low RAM │
+│  • API: /select/logsql/query │   • Survives app crashes         │  • Compressed local disk     │
+│  • Tail: /select/logsql/tail │                                  │    (/var/lib/victoria-logs)  │
+└──────────────────────────────┘                                  └──────────────────────────────┘
+```
+
+* **100% Local Data Ownership:** All logs remain stored locally on the production host (`/var/log/journal` + `/var/lib/victoria-logs`). Zero logs are transmitted to third-party SaaS vendors.
+* **Docker-Equivalent Completeness on Bare Metal:** Because `systemd` captures `stdout` and `stderr` at the OS file-descriptor level, every line—pre-startup config errors, Rust `panic!` backtraces, external subprocess `stderr` (e.g., `ffmpeg`, `yt-dlp`), and systemd unit lifecycle events (`Main process exited, code=killed...`)—is recorded with guaranteed microsecond wall-clock timestamps (`__REALTIME_TIMESTAMP`).
+* **Migration Guide:** For step-by-step host package installation and migrating existing `nohup`/flat-file/`/api/logs` projects, see [OBSERVABILITY_MIGRATION.md](file:///C:/GIT/TECHSTACK/OBSERVABILITY_MIGRATION.md).
+
+### 12.2 Application Telemetry & Latency Instrumentation (`tracing`)
+
+To answer *"why is PROD slow?"* without guessing, applications MUST emit structured JSON logs to `stdout` via `tracing-subscriber` and record explicit execution timings on external calls, database queries, and HTTP handlers:
+
+1. **Structured JSON Output:** Enable `tracing_subscriber::fmt().json()` in production so fields like `level`, `target`, `span`, `request_id`, and `duration_ms` are automatically indexed as queryable columns.
+2. **Latency Spans:** Wrap non-trivial async operations (HTTP routes via `tower_http::trace::TraceLayer`, external CLI invocations, AI/API requests, DB queries) with structured `duration_ms` fields.
+3. **Readable Release Panics:** Keep `strip = "debuginfo"` (rather than `strip = true`) in `Cargo.toml` and `RUST_BACKTRACE=1` in the `systemd` unit so panic logs retain function symbol names prior to `abort`.
+
+### 12.3 Standalone Observability Service Blueprint (Linux PROD — Multi-App Capable)
+
+VictoriaLogs runs once per host as an independent `systemd` unit completely isolated from all application lifecycles. Multiple applications on the same server share this single log store and are cleanly isolated by `SYSLOG_IDENTIFIER` and `_SYSTEMD_UNIT`.
+
+👉 **One-Command Host Installer:** [observability/install.sh](file:///C:/GIT/TECHSTACK/observability/install.sh) automates package installation, binary download, systemd unit setup, and end-to-end health verification.
+
+1. **VictoriaLogs Service (`/etc/systemd/system/victoria-logs.service`):**
+   ```ini
+   [Unit]
+   Description=VictoriaLogs Standalone Local Log Store & UI
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=victorialogs
+   ExecStart=/usr/local/bin/victoria-logs-prod \
+     -storageDataPath=/var/lib/victoria-logs \
+     -retentionPeriod=30d \
+     -httpListenAddr=127.0.0.1:9428 \
+     -journald.streamFields=_HOSTNAME,_SYSTEMD_UNIT,SYSLOG_IDENTIFIER
+   Restart=always
+   RestartSec=5
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+   > [!CAUTION] Security Boundary
+   > Production logs frequently contain user IDs, stack traces, or operational metadata. **NEVER** bind `-httpListenAddr` publicly on `0.0.0.0:9428` without authentication. Bind strictly to `127.0.0.1` or your private Tailscale interface (or expose behind an authenticated TLS reverse proxy).
+
+2. **Native Journald Shipper (`/etc/systemd/journal-upload.conf`):**
+   ```ini
+   [Upload]
+   URL=http://127.0.0.1:9428/insert/journald
+   ```
+   Enabled via `sudo systemctl enable --now systemd-journal-upload.service`. VictoriaLogs natively maps `__REALTIME_TIMESTAMP` to `_time`, `PRIORITY` to log level, and groups streams by `(_MACHINE_ID, _HOSTNAME, _SYSTEMD_UNIT)`.
+
+### 12.4 Read-Only Diagnostic Playbook (Human UI & Agent Queries)
+
+* **Human Web UI (`vmui`):** Access `http://<tailscale-host-or-tunnel>:9428/select/vmui/` for visual time-range slicing, live tailing, and LogsQL exploration.
+* **Investigating Crashes (*"The system just crashed, what happened?"*):**
+  Query both application panics/errors and `systemd` unit exit events across restarts:
+  ```bash
+  curl -sG "http://127.0.0.1:9428/select/logsql/query" \
+    --data-urlencode 'query=_SYSTEMD_UNIT:myapp.service AND (level:error OR panicked OR "Main process exited" OR OOM) _time:30m' \
+    --data-urlencode 'limit=50'
+  ```
+* **Investigating Latency (*"PROD is slow doing X, check why"*):**
+  Filter structured spans by duration or aggregate p95 percentiles directly in LogsQL:
+  ```bash
+  # Find individual slow operations > 500ms in the last hour
+  curl -sG "http://127.0.0.1:9428/select/logsql/query" \
+    --data-urlencode 'query=_SYSTEMD_UNIT:myapp.service duration_ms:>500 _time:1h' \
+    --data-urlencode 'limit=25'
+
+  # Live-tail logs in real time over HTTP
+  curl -N "http://127.0.0.1:9428/select/logsql/tail?query=_SYSTEMD_UNIT:myapp.service"
+  ```
+
 
 
