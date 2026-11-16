@@ -12,8 +12,11 @@ VictoriaLogs and `systemd-journal-upload` are **host-level infrastructure servic
 This repository provides a self-contained installer at [observability/install.sh](file:///C:/GIT/TECHSTACK/observability/install.sh) that installs required packages, downloads `victoria-logs-prod` for your CPU architecture (`amd64` / `arm64`), configures persistent `journald` + `victoria-logs.service` + `systemd-journal-upload.service`, and verifies end-to-end ingestion automatically:
 
 ```bash
-# Run directly on the Linux PROD host (or copy observability/install.sh to the host)
-sudo bash observability/install.sh
+# Zero-residue one-liner directly from GitHub (streams via stdin, cleans temp tarball on exit)
+curl -fsSL https://raw.githubusercontent.com/AnhNTSE183225/techstack/main/observability/install.sh | sudo bash
+
+# Or run from a local clone:
+# sudo bash observability/install.sh
 ```
 
 If you prefer manual step-by-step installation or want to inspect what `install.sh` configures, follow Sections 1.2–1.6 below.
@@ -169,9 +172,17 @@ To answer *"why is PROD slow?"* via LogsQL:
    ```
 3. **Verify Exiting Logs Survive Stop:**
    Run `./stop.sh`, wait 2 seconds, and query again—confirm the `[Shutdown]` exiting lines appear in VictoriaLogs with timestamps while the app is stopped.
-4. **Access Web UI (`vmui`) Safely Over Tailscale / SSH Tunnel:**
-   From your local workstation, forward port `9428` over SSH without exposing it publicly:
+4. **Access Web UI (`vmui`) Safely Over SSH Tunnel (No Tailscale Required):**
+   Run the helper script from your workstation to open the tunnel and launch your default browser straight to `http://localhost:9428/select/vmui/`:
    ```powershell
-   ssh -N -L 9428:127.0.0.1:9428 <user>@<prod-host>
-   # Then open http://localhost:9428/select/vmui/
+   # Windows PowerShell (auto-reads SSH_HOST/HOSTNAME, SSH_USER/USER, SSH_PORT/PORT from .\.env or TECHSTACK\.env)
+   C:\GIT\TECHSTACK\observability\open-logs.ps1
+   # Or specify a host / .env explicitly:
+   C:\GIT\TECHSTACK\observability\open-logs.ps1 <user>@<prod-host>
+   C:\GIT\TECHSTACK\observability\open-logs.ps1 -EnvFile path\to\.env
    ```
+   ```bash
+   # Linux / macOS
+   bash /path/to/TECHSTACK/observability/open-logs.sh [<user>@<prod-host>]
+   ```
+   *(Or manually: `ssh -N -L 9428:127.0.0.1:9428 <user>@<prod-host>` and open `http://localhost:9428/select/vmui/`.)*
