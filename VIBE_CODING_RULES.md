@@ -14,6 +14,7 @@ This document serves as the **single unified rulebook** for building, running, a
 | **[build-start-separation](./build-start-separation/SKILL.md)** | 6-Script Lifecycle (`build`, `start`, `stop` in `.ps1` & `.sh`) | Zero-Assumption toolchain checklist in `build`, 100% production execution in `start` (stores `.pids`), deterministic PID tree termination in `stop`. |
 | **[responsive-ui-audit](./responsive-ui-audit/SKILL.md)** | Responsive Layout & Visual Polish (`Playwright` + `MusicBotUI`) | Zero horizontal overflow across 8 viewports, 5px translucent custom scroller, `cubic-bezier(0.16, 1, 0.3, 1)` sliding tab pill, dynamic flex-stretch grids. |
 | **[solid-architecture](./solid-architecture/SKILL.md)** | SOLID Code Design & Agent Prompt Decomposition | Enforces SRP, OCP, LSP, ISP, and DIP across Rust, SolidJS, and Flutter using zero-cost compile-time abstractions, plus SOLID agent task decomposition. |
+| **[OBSERVABILITY_MIGRATION.md](./OBSERVABILITY_MIGRATION.md)** | Decoupled Observability (`systemd-journald` + `VictoriaLogs`) | 100% local compressed structured logging via `journald` -> `systemd-journal-upload` -> standalone `VictoriaLogs` (`127.0.0.1:9428`), zero flat `nohup` logs or `/api/logs` routes. |
 
 ---
 
@@ -130,3 +131,27 @@ When an AI coding agent works on a project governed by these rules:
 2. **SOLID Self-Audit Before Building:** Verify that no new God files, mixed-concern handlers, bloated prop interfaces, or hardcoded infrastructure dependencies were introduced.
 3. **Mandatory Post-Implementation Build:** After any code change in `backend/`, `frontend/`, or `mobile/`, **always run `.\build.ps1` (or `./build.sh`)** and verify exit code `0` before finishing the turn so production artifacts are never stale.
 4. **Clean Stop After Auditing:** If the agent started the local server solely for verification or Playwright responsive auditing, the agent **MUST run `.\stop.ps1` (or `./stop.sh`)** to terminate the stored PIDs as soon as testing completes.
+
+---
+
+## 7. Rule 6: Decoupled Observability & Mandatory Instrumentation (`systemd-journald` + `VictoriaLogs`)
+
+Production debugging must never rely on guesswork or ad-hoc `nohup` text files. Every backend service runs with OS-level log capture and **plentiful, meaningful structured instrumentation**.
+
+### 7.1 Mandatory Extensive & Meaningful Code Logging
+Whenever you write or modify application code, **instrument thoroughly so logs answer *what happened*, *why*, and *how long it took***:
+1. **Structured JSON Output in Production:** Use `tracing` + `tracing-subscriber` with `.json()` when `PROFILE=PROD` so every log event emits queryable JSON columns (`timestamp`, `level`, `target`, `duration_ms`, `guild_id`, `status`, `client`, etc.).
+2. **Latency & External Dependency Spans:** Record explicit `duration_ms` timings on HTTP handlers (`TraceLayer` / latency middleware), database calls, external CLI pipelines (`yt-dlp`, `ffmpeg`), and third-party APIs (Gemini, Discord, lyrics providers).
+3. **Log Every State Transition, Retry, Fallback & Error:**
+   * State changes MUST log `old -> new (reason)`.
+   * Fallback cascades (e.g., `yt-dlp` player clients, AI model 404 auto-discovery) MUST log `warn!` explaining *which* primary path failed, *why*, and *what* fallback is being attempted next.
+   * Failures MUST log `error!` with actionable context (IDs, status codes, truncated upstream error text) — never swallow errors or empty streams silently.
+4. **Preserve Subprocess `stderr` & Release Symbols:** Spawned child processes (`ffmpeg`, `yt-dlp`) MUST inherit `stderr` (`Stdio::inherit()`) or explicitly log `stderr` on failure so `journald` captures tool diagnostics. Keep `strip = "debuginfo"` in `Cargo.toml`, install a panic hook, and set `RUST_BACKTRACE=1` so crashes preserve readable backtraces.
+
+### 7.2 `systemd-journald` → `systemd-journal-upload` → Standalone `VictoriaLogs`
+* **No Flat `nohup` Logs or Unauthenticated `/api/logs` Routes:** Let `systemd` capture `stdout`/`stderr` directly (`StandardOutput=journal`, `StandardError=journal`, `SyslogIdentifier=<app>`) — see [OBSERVABILITY_MIGRATION.md](./OBSERVABILITY_MIGRATION.md) and [BACKEND_TECHSTACK.md Section 12](./BACKEND_TECHSTACK.md#12-decoupled-production-observability--telemetry-standard).
+* **One-Line Host Setup (Once per Linux Server):**
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/AnhNTSE183225/techstack/main/observability/install.sh | sudo bash
+  ```
+* **Inspect Logs Locally Over SSH Tunnel (`127.0.0.1:9428`):** Never expose VictoriaLogs publicly on `0.0.0.0`; inspect via [`observability/open-logs.ps1`](./observability/open-logs.ps1) or [`observability/open-logs.sh`](./observability/open-logs.sh) (`http://localhost:9428/select/vmui/` or `/select/logsql/query`).
