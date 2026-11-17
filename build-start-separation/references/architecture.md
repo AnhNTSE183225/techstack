@@ -46,24 +46,26 @@ flowchart TD
         S0["1. Invoke stop.ps1 / stop.sh --quiet (Clean Slate)"]
         S1{"2. Artifacts Exist?"}
         S1_Build["Fallback: Run build.ps1 / build.sh"]
-        S2["3. Spawn Release Binary & Static Preview Server"]
-        S3["4. Write Backend & Frontend PIDs to .pids File"]
-        S4["5. 100ms Health Polling -> Print URLs & PIDs (< 500ms)"]
+        S1_Log["3. Boot Logger & Shipper FIRST (VictoriaLogs 9428 + ship-logs.ps1)"]
+        S2["4. Spawn Release Binary & Static Preview Server -> .logs/"]
+        S3["5. Write Logger, Shipper, Backend & Frontend PIDs to .pids"]
+        S4["6. 100ms Health Polling -> Print URLs & PIDs"]
 
         S0 --> S1
-        S1 -- "No" --> S1_Build --> S2
-        S1 -- "Yes" --> S2
-        S2 --> S3 --> S4
+        S1 -- "No" --> S1_Build --> S1_Log
+        S1 -- "Yes" --> S1_Log
+        S1_Log --> S2 --> S3 --> S4
     end
 
     subgraph StopPhase ["3. Deterministic PID Stopper (stop.ps1 / stop.sh)"]
         direction TB
-        K0["1. Read backend_pid & frontend_pid from .pids"]
-        K1["2. Terminate Process Trees (taskkill /T /F or pkill -P)"]
-        K2["3. Sweep Fallback Ports for Any Orphaned Children"]
-        K3["4. Delete .pids State File"]
+        K0["1. Read logger/shipper/app PIDs from .pids"]
+        K1["2. Terminate App Trees & Sweep App Ports (Exclude 9428)"]
+        K2["3. Poll & Confirm ALL App PIDs & Ports Dead"]
+        K3["4. Flush Shipper (.stop-shipper -> .shipper-flushed)"]
+        K4["5. Stop VictoriaLogs LAST (unless -KeepLogger) & Delete .pids"]
 
-        K0 --> K1 --> K2 --> K3
+        K0 --> K1 --> K2 --> K3 --> K4
     end
 
     BuildPhase -.->|"Produces artifacts"| StartPhase
@@ -75,13 +77,16 @@ flowchart TD
 ## 3. Deterministic PID Tracking Protocol (`.pids`)
 
 When `start.ps1` or `start.sh` launches the application:
-1. It immediately captures the OS process ID (`PID`) of both the compiled backend binary and the frontend preview server.
-2. It writes those PIDs to `<repo-root>/.pids`:
-   - On Windows (`start.ps1`): JSON structure containing `backend_pid`, `frontend_pid`, `backend_port`, `frontend_port`, `started_at`.
+1. On Windows (`start.ps1`), it boots `VictoriaLogs` (`127.0.0.1:9428`) and `ship-logs.ps1` **first**, before launching the application processes.
+2. It captures the OS process ID (`PID`) of the logger, shipper, compiled backend binary, and frontend preview server.
+3. It writes those PIDs to `<repo-root>/.pids`:
+   - On Windows (`start.ps1`): JSON structure containing `logger_pid`, `logger_owned`, `logger_port`, `shipper_pid`, `backend_pid`, `frontend_pid`, `backend_port`, `frontend_port`, `stop_sentinel`, `flushed_sentinel`, `started_at`.
    - On Linux (`start.sh`): Key-value shell env structure containing `BACKEND_PID`, `FRONTEND_PID`, `BACKEND_PORT`, `FRONTEND_PORT`, `STARTED_AT`.
-3. When `stop.ps1` or `stop.sh` is executed (either manually by the user, by an AI agent after testing, by `build` before recompiling, or by the `Ctrl+C` trap in `start`):
-   - It reads `.pids` first and kills the exact process trees for those PIDs.
-   - It then performs a secondary port check and deletes `.pids`.
+4. When `stop.ps1` is executed (either manually by the user, by an AI agent after testing, by `build` before recompiling, or by the `Ctrl+C` trap in `start`):
+   - It kills Frontend & Backend PIDs and sweeps application ports (explicitly **excluding** `logger_port`).
+   - It polls until every application PID and port is confirmed dead (if an app fails to stop, it aborts before stopping the logger so shutdown errors remain captured).
+   - It creates the `.stop-shipper` sentinel and waits for `.shipper-flushed` so trailing logs reach `VictoriaLogs`.
+   - It stops `VictoriaLogs` **last** (unless `-KeepLogger` is passed) and deletes `.pids`.
 
 ---
 

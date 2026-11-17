@@ -368,9 +368,9 @@ impl AppConfig {
 
 ## 9. Development, Build/Start/Stop Separation & Deployment Lifecycle
 
-### Mandatory 6-Script Lifecycle Architecture (`build`, `start`, `stop` for `.ps1` & `.sh`)
+### Platform-Specific Lifecycle Architecture (`build`, `start`, `stop` for `.ps1` and/or `.sh`)
 
-Every project MUST implement the **Build / Start / Stop Separation Architecture** (see [build-start-separation/SKILL.md](file:///C:/GIT/TECHSTACK/build-start-separation/SKILL.md)) across both **Windows (`build.ps1`, `start.ps1`, `stop.ps1`)** and **Linux (`build.sh`, `start.sh`, `stop.sh`)**:
+Every project MUST implement the **Build / Start / Stop Separation Architecture** (see [build-start-separation/SKILL.md](file:///C:/GIT/TECHSTACK/build-start-separation/SKILL.md)) for **each target OS the project runs on** — **Windows (`build.ps1`, `start.ps1`, `stop.ps1`)** and/or **Linux (`build.sh`, `start.sh`, `stop.sh`)** (single-OS projects omit the other platform's scripts and `systemd` unit files):
 
 1. **Zero-Assumption Build Script (`build.ps1` / `build.sh`):**
    * Assumes the host machine has **zero pre-installed compilers or dependencies**.
@@ -581,9 +581,9 @@ In accordance with [solid-architecture/SKILL.md](file:///C:/GIT/TECHSTACK/solid-
 
 Applications MUST NEVER host or serve their own log endpoints. If a service fails to parse config, panics at boot, deadlocks, or is OOM-killed, an in-app logging route dies with it. Furthermore, flat `nohup > app.log` redirection lacks guaranteed OS timestamps on non-logger output (panics, linker/OS faults, child process `stderr`) and provides no structured query interface for diagnosing latency regressions.
 
-The stack mandates a **100% self-hosted, locally stored, decoupled observability pipeline** designed for minimal RAM/SD-card overhead while giving both human operators (Web UI) and AI diagnostic agents (HTTP LogsQL API) full visibility into crashes and performance bottlenecks.
+The stack mandates a **100% self-hosted, locally stored, decoupled observability pipeline** into `VictoriaLogs` (`127.0.0.1:9428`), using each target OS's native capture mechanism (**Section 12.3** `systemd-journald` on Linux servers, or **Section 12.5** `ship-logs.ps1` ordered lifecycle on Windows):
 
-### 12.1 Pipeline Topology (Zero Third-Party SaaS)
+### 12.1 Pipeline Topology (Zero Third-Party SaaS — Linux & Windows Paths)
 
 ```text
 ┌──────────────────────────────┐     stdout / stderr (OS fds)     ┌──────────────────────────────┐
@@ -614,9 +614,9 @@ To answer *"why is PROD slow?"* without guessing, applications MUST emit structu
 2. **Latency Spans:** Wrap non-trivial async operations (HTTP routes via `tower_http::trace::TraceLayer`, external CLI invocations, AI/API requests, DB queries) with structured `duration_ms` fields.
 3. **Readable Release Panics:** Keep `strip = "debuginfo"` (rather than `strip = true`) in `Cargo.toml` and `RUST_BACKTRACE=1` in the `systemd` unit so panic logs retain function symbol names prior to `abort`.
 
-### 12.3 Standalone Observability Service Blueprint (Linux PROD — Multi-App Capable)
+### 12.3 Standalone Observability Service Blueprint (Linux Targets Only)
 
-VictoriaLogs runs once per host as an independent `systemd` unit completely isolated from all application lifecycles. Multiple applications on the same server share this single log store and are cleanly isolated by `SYSLOG_IDENTIFIER` and `_SYSTEMD_UNIT`.
+On Linux servers, VictoriaLogs runs once per host as an independent `systemd` unit completely isolated from all application lifecycles. *(Windows-only projects skip this section and use Section 12.5 instead.)* Multiple applications on the same Linux server share this single log store and are cleanly isolated by `SYSLOG_IDENTIFIER` and `_SYSTEMD_UNIT`.
 
 👉 **One-Command Host Installer:** [observability/install.sh](file:///C:/GIT/TECHSTACK/observability/install.sh) automates package installation, binary download, systemd unit setup, and end-to-end health verification.
 
@@ -671,6 +671,21 @@ VictoriaLogs runs once per host as an independent `systemd` unit completely isol
   # Live-tail logs in real time over HTTP
   curl -N "http://127.0.0.1:9428/select/logsql/tail?query=_SYSTEMD_UNIT:myapp.service"
   ```
+
+### 12.5 Windows Local Observability Lifecycle (`victoria-logs-prod.exe` + `ship-logs.ps1`)
+
+On Windows hosts (no `systemd-journald`), the exact same `127.0.0.1:9428` `VictoriaLogs` schema and `vmui`/LogsQL query workflow applies without requiring Administrator privileges:
+
+1. **Zero-Admin Binary Setup (`observability/install.ps1`):** Installs `victoria-logs-prod.exe` into `%LOCALAPPDATA%\VictoriaLogs\bin\victoria-logs-prod.exe` with compressed TSDB storage in `%LOCALAPPDATA%\VictoriaLogs\data\` (`retentionPeriod=30d`, bound exclusively to `127.0.0.1:9428`).
+2. **Start Logger First (`start.ps1`):** `start.ps1` boots `VictoriaLogs` first -> waits for `/health` `200 OK` -> spawns `observability/ship-logs.ps1` to tail `.logs\*.log` -> launches Backend (`RUST_LOG=info`, `LOG_FORMAT=json`) and Frontend with `stdout`/`stderr` redirected to `.logs\`.
+3. **Graceful Ordered Shutdown (`stop.ps1`):**
+   * Stops Frontend & Backend trees and sweeps app ports (`logger_port` excluded).
+   * Polls until **all** application PIDs and listening ports are confirmed dead (`Wait-AppsConfirmedStopped`).
+   * Writes `.logs\.stop-shipper` and waits for `.logs\.shipper-flushed` so `ship-logs.ps1` finishes batching trailing crash/shutdown lines into `http://127.0.0.1:9428/insert/jsonline`.
+   * Terminates `victoria-logs-prod.exe` **very last** (unless `-KeepLogger` is passed or `logger_owned = false`).
+4. **Querying Windows Logs Locally (`vmui` / LogsQL):**
+   Open `http://127.0.0.1:9428/select/vmui/` directly in a browser (while running or with `stop.ps1 -KeepLogger`), or query `stream:stderr OR level:error _time:30m` via `http://127.0.0.1:9428/select/logsql/query`.
+
 
 
 

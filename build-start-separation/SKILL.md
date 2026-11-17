@@ -16,10 +16,11 @@ This specification defines the mandatory lifecycle script architecture for full-
 ## ⚡ The Three Cardinal Rules
 
 > [!IMPORTANT]
-> 1. **Dual-Environment 3-Script Mandate (6 Scripts Total):**
->    Every repository MUST provide `build`, `start`, and `stop` scripts at the root for **both Windows PowerShell (`.ps1`) and Linux/macOS Bash (`.sh`)**:
->    * **Windows:** `build.ps1`, `start.ps1`, `stop.ps1`
->    * **Linux-based:** `build.sh`, `start.sh`, `stop.sh`
+> 1. **Target-Platform 3-Script Mandate (`build`, `start`, `stop`):**
+>    Every repository MUST provide `build`, `start`, and `stop` scripts at the root for **each supported target OS** (single-platform projects only need scripts for that OS):
+>    * **Windows targets:** `build.ps1`, `start.ps1`, `stop.ps1`
+>    * **Linux / macOS targets:** `build.sh`, `start.sh`, `stop.sh`
+>    * *(Cross-platform projects include all 6.)*
 >
 > 2. **Zero-Assumption Build Script (`build.ps1` / `build.sh`):**
 >    The build script MUST assume the target machine is a **completely bare system with zero pre-installed compilers, runtimes, or dependencies** (no Rust, no MSVC/GCC linker, no Node.js, no pnpm, no Java/JDK, no Flutter).
@@ -34,11 +35,11 @@ This specification defines the mandatory lifecycle script architecture for full-
 
 ---
 
-## The Three-Script Separation Model (Windows & Linux)
+## The Three-Script Separation Model (Per Target OS)
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                           REPOSITORY ROOT (6 MANDATORY SCRIPTS)                        │
+│                   REPOSITORY ROOT (3 SCRIPTS PER TARGET PLATFORM)                      │
 ├───────────────────────────┬─────────────────────────────┬──────────────────────────────┤
 │   build.ps1 / build.sh    │    start.ps1 / start.sh     │     stop.ps1 / stop.sh       │
 │  (Zero-Assumption Build)  │     (Production Runner)     │   (Deterministic PID Stop)   │
@@ -100,20 +101,22 @@ Every `build.ps1` and `build.sh` MUST verify the following checklist in order be
 ### Step 2: Structure the Runtime Launcher (`start.ps1` & `start.sh`)
 1. **Clean Slate via `stop`:** Invoke `.\stop.ps1 -Quiet` / `./stop.sh --quiet` first if an instance is already running.
 2. **Artifact Verification (`Ensure-BuildArtifacts`):** Check if `frontend/dist/index.html` and `backend/target/release/<binary>` exist. Run `build` automatically **only** if missing.
-3. **Launch Pre-Compiled Production Artifacts:** Spawn the release binary and static preview server (`pnpm run preview`).
-4. **Persist `.pids` State File:** Immediately write `backend_pid`, `frontend_pid`, `backend_port`, `frontend_port`, and `started_at` to `<repo-root>/.pids`.
-5. **Fast Readiness Probing & Teardown Trap:** Poll endpoints at 100ms intervals until `200 OK`, print clickable URLs and PIDs, and trap Ctrl+C (`SIGINT`/`SIGTERM`/`PipelineStoppedException`) to invoke `stop.ps1` / `stop.sh`.
+3. **Start Observability Stack FIRST (Windows `start.ps1`):** Boot `victoria-logs-prod.exe` on `127.0.0.1:9428`, wait for `/health` `200 OK`, and start `observability/ship-logs.ps1` before any app starts so startup errors and panics are never lost.
+4. **Launch Pre-Compiled Production Artifacts:** Spawn the release binary (`RUST_LOG=info`, `LOG_FORMAT=json`) and static preview server (`pnpm run preview`), redirecting Windows `stdout`/`stderr` to `.logs\*.log` (or relying on `systemd-journald` on Linux).
+5. **Persist `.pids` State File:** Immediately write `logger_pid`, `logger_owned`, `logger_port`, `shipper_pid`, `backend_pid`, `frontend_pid`, `backend_port`, `frontend_port`, and `started_at` to `<repo-root>/.pids`.
+6. **Fast Readiness Probing & Teardown Trap:** Poll endpoints at 100ms intervals until `200 OK`, print clickable URLs and PIDs, and trap Ctrl+C (`SIGINT`/`SIGTERM`/`PipelineStoppedException`) to invoke `stop.ps1` / `stop.sh`.
 
 👉 See [examples/start.ps1.template](./examples/start.ps1.template) and [examples/start.sh.template](./examples/start.sh.template).
 
 ---
 
 ### Step 3: Structure the Deterministic Stop Script (`stop.ps1` & `stop.sh`)
-1. **Read `.pids` File:** Parse `backend_pid` and `frontend_pid` from `<repo-root>/.pids`.
-2. **Kill Process Trees by PID:**
-   * **Windows (`stop.ps1`):** Execute `taskkill.exe /PID <pid> /T /F` and `Stop-Process -Id <pid> -Force`.
+1. **Read `.pids` File:** Parse `backend_pid`, `frontend_pid`, `logger_pid`, `logger_owned`, `logger_port`, and `shipper_pid` from `<repo-root>/.pids`.
+2. **Kill Application Process Trees FIRST:**
+   * **Windows (`stop.ps1`):** Execute `taskkill.exe /PID <pid> /T /F` and `Stop-Process -Id <pid> -Force` on Frontend and Backend PIDs.
    * **Linux (`stop.sh`):** Execute `pkill -TERM -P <pid>` and `kill -TERM <pid>`, escalating to `kill -KILL` after 200ms if still alive.
-3. **Fallback Port Sweep & Cleanup:** Check configured ports (`8080`, `5173`, etc.) for any surviving child processes, terminate them, and delete `.pids`.
+3. **Fallback App Port Sweep & Confirmed Shutdown (Windows):** Check application ports (`8080`, `5173`, etc. — **excluding** `logger_port` `9428`), terminate survivors, and **poll to confirm every application PID & port is completely dead**. If any app lingers, abort logger teardown so shutdown diagnostics remain captured.
+4. **Flush Shipper & Stop Logger LAST (Windows):** Create `.logs\.stop-shipper`, wait for `.logs\.shipper-flushed` (trailing `stdout`/`stderr` shipped to `VictoriaLogs`), terminate `VictoriaLogs` **last** (unless `-KeepLogger` is set), and delete `.pids`.
 
 👉 See [examples/stop.ps1.template](./examples/stop.ps1.template) and [examples/stop.sh.template](./examples/stop.sh.template).
 

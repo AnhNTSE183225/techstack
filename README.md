@@ -35,6 +35,16 @@ curl -fsSL https://raw.githubusercontent.com/AnhNTSE183225/techstack/main/observ
     https://raw.githubusercontent.com/AnhNTSE183225/techstack/main/observability/install.sh | sudo bash
   ```
 
+### Windows Local Setup (No Admin / UAC Required)
+
+Windows does not have `systemd-journald`, so `start.ps1` starts standalone `victoria-logs-prod.exe` + [`observability/ship-logs.ps1`](observability/ship-logs.ps1) **first** before any app starts, and `stop.ps1` confirms all app processes & ports are dead and flushed **before** stopping VictoriaLogs **last**:
+
+```powershell
+irm https://raw.githubusercontent.com/AnhNTSE183225/techstack/main/observability/install.ps1 | iex
+```
+
+* Once installed into `%LOCALAPPDATA%\VictoriaLogs`, your app's `start.ps1` / `stop.ps1` manage the full logger lifecycle automatically (`.\stop.ps1 -KeepLogger` keeps `http://127.0.0.1:9428/select/vmui/` open after stopping apps).
+
 ---
 
 ## Repository Index
@@ -44,9 +54,11 @@ curl -fsSL https://raw.githubusercontent.com/AnhNTSE183225/techstack/main/observ
 | **[BACKEND_TECHSTACK.md](BACKEND_TECHSTACK.md)** | High-performance Rust (`Axum`, `Tokio`, `SQLx`, `tracing`, FSM architecture, decoupled observability) |
 | **[FRONTEND_TECHSTACK.md](FRONTEND_TECHSTACK.md)** | Low-overhead SolidJS + Tailwind CSS + client FSM reactive architecture |
 | **[MOBILE_TECHSTACK.md](MOBILE_TECHSTACK.md)** | High-FPS Flutter (`Impeller` + `signals_flutter` + `Drift`) architecture |
-| **[OBSERVABILITY_MIGRATION.md](OBSERVABILITY_MIGRATION.md)** | Step-by-step host install & migration guide from flat logs / `/api/logs` to `journald` + `VictoriaLogs` |
+| **[OBSERVABILITY_MIGRATION.md](OBSERVABILITY_MIGRATION.md)** | Step-by-step host install & migration guide (`journald` on Linux, `ship-logs.ps1` + ordered lifecycle on Windows) |
 | **[VIBE_CODING_RULES.md](VIBE_CODING_RULES.md)** | Cross-project coding & operational discipline rules |
 | **[observability/install.sh](observability/install.sh)** | Self-contained, verified Linux host installer for `VictoriaLogs` + `systemd-journal-upload` |
-| **`build-start-separation/`** | 6-script (`build` / `start` / `stop` for `.ps1` & `.sh`) lifecycle standard & templates |
+| **[observability/install.ps1](observability/install.ps1)** | Zero-admin Windows installer for standalone `victoria-logs-prod.exe` (`%LOCALAPPDATA%\VictoriaLogs`) |
+| **[observability/ship-logs.ps1](observability/ship-logs.ps1)** | Windows NDJSON/stderr log shipper with atomic `.stop-shipper` -> `.shipper-flushed` shutdown handshake |
+| **`build-start-separation/`** | Target-platform 3-script (`build` / `start` / `stop` for `.ps1` and/or `.sh`) lifecycle standard & templates |
 | **`solid-architecture/`** | Zero-cost SOLID architecture skill & cross-stack reference |
 | **`responsive-ui-audit/`** | Responsive layout & mobile overflow audit skill |

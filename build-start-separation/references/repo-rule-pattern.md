@@ -11,10 +11,10 @@ Every project created with this tech stack MUST include the following lifecycle 
 ```markdown
 # Repository Rules: Build, Start & Stop Lifecycle
 
-## 1. Six Mandatory Root Lifecycle Scripts (Windows & Linux)
-This repository maintains three core lifecycle scripts across two environments:
-- **Windows (PowerShell):** `build.ps1`, `start.ps1`, `stop.ps1`
-- **Linux / macOS (Bash):** `build.sh`, `start.sh`, `stop.sh`
+## 1. Root Lifecycle Scripts (Per Target Platform)
+This repository maintains three core lifecycle scripts for each target OS it supports (omit unsupported OS scripts for single-platform projects):
+- **Windows targets (PowerShell):** `build.ps1`, `start.ps1`, `stop.ps1`
+- **Linux / macOS targets (Bash):** `build.sh`, `start.sh`, `stop.sh`
 
 ## 2. Zero-Assumption Build Script (`build.ps1` / `build.sh`)
 - `build.ps1` and `build.sh` MUST assume the host machine has zero pre-installed compilers, runtimes, or project dependencies.

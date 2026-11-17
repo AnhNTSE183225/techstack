@@ -63,7 +63,7 @@ function Install-ViaWinget {
     if (-not (Test-CommandExists "winget")) {
         return $false
     }
-    Write-Host "  [⚙ AUTO-INSTALL] Installing $DisplayName ($PackageId) via winget..." -ForegroundColor Yellow
+    Write-Host "  [AUTO-INSTALL] Installing $DisplayName ($PackageId) via winget..." -ForegroundColor Yellow
     $argList = "install --id $PackageId --exact --silent --accept-package-agreements --accept-source-agreements $ExtraArgs"
     $proc = Start-Process -FilePath "winget" -ArgumentList $argList -Wait -PassThru -NoNewWindow
     Refresh-SessionPath
@@ -79,7 +79,7 @@ function Throw-MissingDependency {
     )
     Write-Host ""
     Write-Host "==================================================================" -ForegroundColor Red
-    Write-Host " [✖] FATAL: MISSING REQUIRED BUILD ENVIRONMENT DEPENDENCY" -ForegroundColor Red
+    Write-Host " [ERROR] FATAL: MISSING REQUIRED BUILD ENVIRONMENT DEPENDENCY" -ForegroundColor Red
     Write-Host "==================================================================" -ForegroundColor Red
     Write-Host "  Missing Component : $DependencyName" -ForegroundColor Yellow
     Write-Host "  Required For      : $Purpose" -ForegroundColor Gray
@@ -116,7 +116,7 @@ if (-not (Test-CommandExists "git")) {
             -InstallCommand "winget install Git.Git"
     }
 }
-Write-Host "  [✔] Git SCM verified: $(git --version)" -ForegroundColor Green
+Write-Host "  [OK] Git SCM verified: $(git --version)" -ForegroundColor Green
 
 # 0.2 Backend Toolchain Checks (MSVC C++ Linker + Rustup/Cargo)
 if (-not $SkipBackend -and (Test-Path $backendDir)) {
@@ -133,7 +133,7 @@ if (-not $SkipBackend -and (Test-Path $backendDir)) {
                 -InstallCommand 'winget install Microsoft.VisualStudio.2022.BuildTools --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools"'
         }
     }
-    Write-Host "  [✔] MSVC C/C++ Native Linker verified" -ForegroundColor Green
+    Write-Host "  [OK] MSVC C/C++ Native Linker verified" -ForegroundColor Green
 
     if (-not (Test-CommandExists "cargo") -or -not (Test-CommandExists "rustc")) {
         $installed = Install-ViaWinget -PackageId "Rustlang.Rustup" -DisplayName "Rust Toolchain (rustup)"
@@ -149,7 +149,7 @@ if (-not $SkipBackend -and (Test-Path $backendDir)) {
                 -InstallCommand "winget install Rustlang.Rustup"
         }
     }
-    Write-Host "  [✔] Rust Toolchain verified: $(rustc --version) | $(cargo --version)" -ForegroundColor Green
+    Write-Host "  [OK] Rust Toolchain verified: $(rustc --version) | $(cargo --version)" -ForegroundColor Green
 }
 
 # 0.3 Frontend Toolchain Checks (Node.js LTS + pnpm)
@@ -164,10 +164,10 @@ if (-not $SkipFrontend -and (Test-Path $frontendDir)) {
                 -InstallCommand "winget install OpenJS.NodeJS.LTS"
         }
     }
-    Write-Host "  [✔] Node.js verified: $(node --version)" -ForegroundColor Green
+    Write-Host "  [OK] Node.js verified: $(node --version)" -ForegroundColor Green
 
     if (-not (Test-CommandExists "pnpm")) {
-        Write-Host "  [⚙ AUTO-INSTALL] Enabling pnpm via Corepack / npm..." -ForegroundColor Yellow
+        Write-Host "  [AUTO-INSTALL] Enabling pnpm via Corepack / npm..." -ForegroundColor Yellow
         try {
             if (Test-CommandExists "corepack") {
                 & corepack enable 2>$null
@@ -190,7 +190,7 @@ if (-not $SkipFrontend -and (Test-Path $frontendDir)) {
                 -InstallCommand "corepack enable && corepack prepare pnpm@latest --activate"
         }
     }
-    Write-Host "  [✔] pnpm verified: v$(pnpm --version)" -ForegroundColor Green
+    Write-Host "  [OK] pnpm verified: v$(pnpm --version)" -ForegroundColor Green
 }
 
 # 0.4 Mobile Toolchain Checks (OpenJDK 17 + Flutter SDK)
@@ -206,7 +206,7 @@ if ($IncludeMobile -or (Test-Path $mobileDir)) {
                     -InstallCommand "winget install Microsoft.OpenJDK.17"
             }
         }
-        Write-Host "  [✔] Java JDK verified" -ForegroundColor Green
+        Write-Host "  [OK] Java JDK verified" -ForegroundColor Green
 
         if (-not (Test-CommandExists "flutter")) {
             $installed = Install-ViaWinget -PackageId "Google.Flutter" -DisplayName "Flutter SDK"
@@ -218,7 +218,7 @@ if ($IncludeMobile -or (Test-Path $mobileDir)) {
                     -InstallCommand "winget install Google.Flutter"
             }
         }
-        Write-Host "  [✔] Flutter SDK verified" -ForegroundColor Green
+        Write-Host "  [OK] Flutter SDK verified" -ForegroundColor Green
     }
 }
 Write-Host ""
@@ -289,7 +289,7 @@ if (-not $SkipFrontend -and (Test-Path $frontendDir)) {
 
     $distAssets = Get-ChildItem (Join-Path $frontendDir "dist\assets") -File -ErrorAction SilentlyContinue
     $totalKb = ($distAssets | Measure-Object -Property Length -Sum).Sum / 1KB
-    Write-Host ("  [✔] Frontend production bundle ready! ({0:N1} KB assets)" -f $totalKb) -ForegroundColor Green
+    Write-Host ("  [OK] Frontend production bundle ready! ({0:N1} KB assets)" -f $totalKb) -ForegroundColor Green
     Write-Host ""
 }
 
@@ -320,7 +320,7 @@ if (-not $SkipBackend -and (Test-Path $backendDir)) {
     }
     $releaseExe = $exeCandidates | Select-Object -First 1
     $mb = $releaseExe.Length / 1MB
-    Write-Host ("  [✔] Backend release binary ready: $($releaseExe.Name) ({0:N2} MB)" -f $mb) -ForegroundColor Green
+    Write-Host ("  [OK] Backend release binary ready: $($releaseExe.Name) ({0:N2} MB)" -f $mb) -ForegroundColor Green
     Write-Host ""
 }
 
@@ -342,7 +342,7 @@ if ($IncludeMobile -and (Test-Path $mobileDir)) {
     } finally {
         Pop-Location
     }
-    Write-Host "  [✔] Mobile ARM64 Release APK built successfully!" -ForegroundColor Green
+    Write-Host "  [OK] Mobile ARM64 Release APK built successfully!" -ForegroundColor Green
     Write-Host ""
 }
 
@@ -355,6 +355,7 @@ $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
 Write-Host "==================================================================" -ForegroundColor Green
 Write-Host "       PRODUCTION BUILD COMPLETED SUCCESSFULLY IN ${elapsed}s!" -ForegroundColor Green
 Write-Host "==================================================================" -ForegroundColor Green
+Write-Host "  Observability     : .\observability\install.ps1 (auto-started by .\start.ps1)" -ForegroundColor Cyan
 Write-Host "  Start Application : .\start.ps1" -ForegroundColor Yellow
 Write-Host "  Stop Application  : .\stop.ps1" -ForegroundColor Yellow
 Write-Host ""

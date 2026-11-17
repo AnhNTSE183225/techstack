@@ -1,10 +1,14 @@
-# Observability Migration Guide: Flat Logs / In-App `/api/logs` $\rightarrow$ `systemd-journald` + `VictoriaLogs`
+# Observability Migration Guide: Flat Logs / In-App `/api/logs` $\rightarrow$ `VictoriaLogs` (Linux `systemd-journald` & Windows `ship-logs.ps1`)
 
-This guide explains how to install the host-level logging infrastructure and migrate an existing bare-metal project (running via `nohup > *.log` or exposing an in-app `/api/logs` file reader) to the **100% local, decoupled observability stack** specified in [BACKEND_TECHSTACK.md](file:///C:/GIT/TECHSTACK/BACKEND_TECHSTACK.md#L580-L672).
+This guide explains how to set up decoupled local logging into standalone **`VictoriaLogs` (`127.0.0.1:9428`)** for your project's target operating system:
+* **Linux Server Targets:** Sections 1–3 (`observability/install.sh`, `systemd-journald`, `start.sh`/`stop.sh`).
+* **Windows-Only / Local Windows Targets:** [Section 4](#4-windows-local-observability-setup-installps1--ship-logsps1--ordered-lifecycle) (`observability/install.ps1` + `ship-logs.ps1` orchestrated by `start.ps1` and `stop.ps1`, with **no `systemd` or `.sh` scripts needed**).
+
+*(Use only the platform section that matches where your project runs, plus the shared application instrumentation rules in [BACKEND_TECHSTACK.md](file:///C:/GIT/TECHSTACK/BACKEND_TECHSTACK.md#L580-L691).)*
 
 ---
 
-## 1. Host Prerequisites & Installation (Linux PROD — Once Per Host)
+## 1. Host Prerequisites & Installation (Linux Targets Only — Once Per Host)
 
 VictoriaLogs and `systemd-journal-upload` are **host-level infrastructure services** installed **once** on the production server—completely separate from your application repositories. A single host installation automatically collects and separates logs for **all** applications on that machine (e.g., `musicbot`, `api-server`, `worker-daemon`) via `SYSLOG_IDENTIFIER` and `_SYSTEMD_UNIT`.
 
@@ -186,3 +190,34 @@ To answer *"why is PROD slow?"* via LogsQL:
    bash /path/to/TECHSTACK/observability/open-logs.sh [<user>@<prod-host>]
    ```
    *(Or manually: `ssh -N -L 9428:127.0.0.1:9428 <user>@<prod-host>` and open `http://localhost:9428/select/vmui/`.)*
+
+---
+
+## 4. Windows Local Observability Setup (`install.ps1` + `ship-logs.ps1` + Ordered Lifecycle)
+
+Because Windows does not have `systemd-journald` or `systemd-journal-upload`, Windows machines run standalone `victoria-logs-prod.exe` plus a zero-dependency PowerShell shipper (`observability/ship-logs.ps1`), orchestrated directly by `start.ps1` and `stop.ps1`.
+
+### 4.1 One-Line Windows Installation (No Admin / UAC Required)
+
+```powershell
+irm https://raw.githubusercontent.com/AnhNTSE183225/techstack/main/observability/install.ps1 | iex
+```
+
+* Installs `victoria-logs-prod.exe` into `%LOCALAPPDATA%\VictoriaLogs\bin\victoria-logs-prod.exe` and stores compressed logs in `%LOCALAPPDATA%\VictoriaLogs\data\`.
+* Temporary zip archives are extracted to `$env:TEMP` and deleted immediately after verification.
+
+### 4.2 Ordered Process Lifecycle (`start.ps1` & `stop.ps1`)
+
+Use the templates in [`build-start-separation/examples/start.ps1.template`](./build-start-separation/examples/start.ps1.template) and [`build-start-separation/examples/stop.ps1.template`](./build-start-separation/examples/stop.ps1.template):
+
+1. **Startup Order (`start.ps1`):**
+   1. Start `victoria-logs-prod.exe` bound to `127.0.0.1:9428` (or reuse an existing healthy instance on `9428`) and wait for `/health` `200 OK`.
+   2. Start `observability/ship-logs.ps1` tailing `.logs\*.log` (`FileShare.ReadWrite | FileShare.Delete` so apps never hit file locks).
+   3. Launch Backend (with `RUST_LOG=info` / `LOG_FORMAT=json`) and Frontend, redirecting `stdout`/`stderr` to `.logs\*.log`.
+   4. Persist `logger_pid`, `logger_owned`, `logger_port`, `shipper_pid`, `backend_pid`, and `frontend_pid` into `.pids`.
+2. **Shutdown Order (`stop.ps1`):**
+   1. Terminate Frontend & Backend process trees and sweep app ports (explicitly skipping `logger_port`).
+   2. **Confirm** every application PID is gone and every application port is closed. If an app fails to stop, abort logger shutdown so crash diagnostics continue to flow.
+   3. Signal `.logs\.stop-shipper` and wait for `.logs\.shipper-flushed` (trailing `stdout`/`stderr` flushed cleanly to `127.0.0.1:9428/insert/jsonline`).
+   4. Terminate `VictoriaLogs` **last** (pass `-KeepLogger` to keep `http://127.0.0.1:9428/select/vmui/` up for post-mortem inspection).
+

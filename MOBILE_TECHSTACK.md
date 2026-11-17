@@ -470,9 +470,9 @@ class _AnimatedPanelDemoState extends State<AnimatedPanelDemo> {
 }
 ```
 
-### 9.4 Mandatory 6-Script Lifecycle (`build`, `start`, `stop` for `.ps1` & `.sh`) & `Justfile`
+### 9.4 Target-Platform Lifecycle Scripts (`build`, `start`, `stop`) & `Justfile`
 
-In accordance with [build-start-separation/SKILL.md](file:///C:/GIT/TECHSTACK/build-start-separation/SKILL.md), the mobile workspace integrates into the repository's 6 mandatory root scripts (`build.ps1`, `start.ps1`, `stop.ps1` for Windows; `build.sh`, `start.sh`, `stop.sh` for Linux):
+In accordance with [build-start-separation/SKILL.md](file:///C:/GIT/TECHSTACK/build-start-separation/SKILL.md), the mobile workspace integrates into the repository's root scripts for each supported host OS (`build.ps1`, `start.ps1`, `stop.ps1` on Windows; `build.sh`, `start.sh`, `stop.sh` on Linux):
 
 1. **Zero-Assumption Build (`build.ps1 -IncludeMobile` / `./build.sh --include-mobile`):**
    * Assumes a bare OS with zero pre-installed compilers or SDKs.

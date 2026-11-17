@@ -293,7 +293,7 @@ export default function AnimatedPanelDemo() {
 
 ## 9. Build / Start / Stop Separation Lifecycle
 
-In accordance with [build-start-separation/SKILL.md](file:///C:/GIT/TECHSTACK/build-start-separation/SKILL.md), the application MUST NEVER be launched via `pnpm dev` / `vite` dev mode for standard operation or testing, as on-demand module transpilation causes a 5–15s blank white screen. Instead, every project uses the **6 mandatory root scripts** (`build.ps1`, `start.ps1`, `stop.ps1` on Windows; `build.sh`, `start.sh`, `stop.sh` on Linux):
+In accordance with [build-start-separation/SKILL.md](file:///C:/GIT/TECHSTACK/build-start-separation/SKILL.md), the application MUST NEVER be launched via `pnpm dev` / `vite` dev mode for standard operation or testing, as on-demand module transpilation causes a 5–15s blank white screen. Instead, every project uses the **3 root lifecycle scripts for each supported target OS** (`build.ps1`, `start.ps1`, `stop.ps1` for Windows targets; `build.sh`, `start.sh`, `stop.sh` for Linux/macOS targets; all 6 if cross-platform):
 
 1. **Zero-Assumption Build (`.\build.ps1` / `./build.sh`):**
    * Runs a pre-flight checklist assuming a bare system: checks for Node.js LTS and `pnpm`, auto-installing them via `winget` / `corepack` / `apt` if possible, or throwing an explicit fatal error with download instructions if missing.

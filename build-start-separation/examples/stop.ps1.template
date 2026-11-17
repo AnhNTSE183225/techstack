@@ -1,19 +1,28 @@
 # ==============================================================================
-# Deterministic PID Stop Script Template (PowerShell / Windows)
+# Deterministic Ordered Stop Script Template (PowerShell / Windows)
 # ==============================================================================
-# Stops running application services deterministically using the stored .pids
-# file written by .\start.ps1, with fallback port & process-tree cleanup.
+# Strictly enforces reverse-order shutdown for Windows local observability:
+#   1. Stops application services FIRST (Frontend, then Backend) + sweeps app ports
+#   2. Polls & CONFIRMS every app PID & app port has exited completely
+#      (refuses to stop VictoriaLogs if an app is still alive)
+#   3. Signals ship-logs.ps1 to drain trailing crash/shutdown lines to EOF,
+#      waits for flush confirmation, and stops the shipper cleanly
+#   4. Stops VictoriaLogs LAST (unless -KeepLogger is specified)
+#   5. Removes .pids state file
 #
 # Usage:
-#   .\stop.ps1          # Stop services by stored PID and clean up .pids
-#   .\stop.ps1 -Quiet   # Suppress non-essential output (used by build/start)
+#   .\stop.ps1              # Stop apps -> confirm dead -> flush logs -> stop logger LAST
+#   .\stop.ps1 -KeepLogger  # Stop apps only; keep VictoriaLogs running for log inspection
+#   .\stop.ps1 -Quiet       # Suppress non-essential output (used by build/start)
 # ==============================================================================
 
 param(
     [switch]$Quiet,
+    [switch]$KeepLogger,
     [int[]]$FallbackPorts = @(8080, 3001, 5173, 3000)
 )
 
+$ErrorActionPreference = "Continue"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -46,60 +55,176 @@ function Stop-PidTree {
         Stop-Process -Id $TargetPid -Force -ErrorAction SilentlyContinue
     } catch {}
 
-    Start-Sleep -Milliseconds 200
     return $true
 }
 
+function Wait-AppsConfirmedStopped {
+    param(
+        [int[]]$AppPids,
+        [int[]]$AppPorts,
+        [int]$TimeoutMs = 5000
+    )
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $alivePid = $null
+        foreach ($p in $AppPids) {
+            if ($p -and $p -gt 4) {
+                if ($null -ne (Get-Process -Id $p -ErrorAction SilentlyContinue)) {
+                    $alivePid = $p
+                    break
+                }
+            }
+        }
+
+        $busyPort = $null
+        if ($null -eq $alivePid) {
+            foreach ($port in $AppPorts) {
+                $conn = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($conn -and $conn.OwningProcess -gt 4) {
+                    $busyPort = $port
+                    # Attempt cleanup of lingering listener
+                    Stop-PidTree -TargetPid ([int]$conn.OwningProcess) -Label "Lingering Port $port" | Out-Null
+                    break
+                }
+            }
+        }
+
+        if (($null -eq $alivePid) -and ($null -eq $busyPort)) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    return $false
+}
+
+$loggerPid = 0
+$loggerOwned = $false
+$loggerPort = 9428
+$shipperPid = 0
+$backendPid = 0
+$frontendPid = 0
+$stopSentinel = ""
+$flushDoneFile = ""
+$appPorts = @() + $FallbackPorts
 $stoppedAny = $false
 
-# 1. Primary: Stop by stored PIDs in .pids file
+# 1. Read .pids state and stop Application Services FIRST
 if (Test-Path $pidFile) {
     Write-StopLog "Reading stored PIDs from $pidFile..." "Cyan"
     try {
         $pidData = Get-Content -Path $pidFile -Raw | ConvertFrom-Json
+        if ($pidData.logger_pid)      { $loggerPid     = [int]$pidData.logger_pid }
+        if ($null -ne $pidData.logger_owned) { $loggerOwned = [bool]$pidData.logger_owned }
+        if ($pidData.logger_port)     { $loggerPort    = [int]$pidData.logger_port }
+        if ($pidData.shipper_pid)     { $shipperPid    = [int]$pidData.shipper_pid }
+        if ($pidData.backend_pid)     { $backendPid    = [int]$pidData.backend_pid }
+        if ($pidData.frontend_pid)    { $frontendPid   = [int]$pidData.frontend_pid }
+        if ($pidData.stop_sentinel)   { $stopSentinel  = [string]$pidData.stop_sentinel }
+        if ($pidData.flush_done_file) { $flushDoneFile = [string]$pidData.flush_done_file }
 
-        if ($pidData.frontend_pid) {
-            if (Stop-PidTree -TargetPid ([int]$pidData.frontend_pid) -Label "Frontend") {
-                $stoppedAny = $true
-            }
+        if ($pidData.backend_port -and ($appPorts -notcontains [int]$pidData.backend_port)) {
+            $appPorts += [int]$pidData.backend_port
         }
-        if ($pidData.backend_pid) {
-            if (Stop-PidTree -TargetPid ([int]$pidData.backend_pid) -Label "Backend") {
-                $stoppedAny = $true
-            }
-        }
-        if ($pidData.backend_port -and ($FallbackPorts -notcontains [int]$pidData.backend_port)) {
-            $FallbackPorts += [int]$pidData.backend_port
-        }
-        if ($pidData.frontend_port -and ($FallbackPorts -notcontains [int]$pidData.frontend_port)) {
-            $FallbackPorts += [int]$pidData.frontend_port
+        if ($pidData.frontend_port -and ($appPorts -notcontains [int]$pidData.frontend_port)) {
+            $appPorts += [int]$pidData.frontend_port
         }
     } catch {
-        Write-StopLog "  Warning: Could not parse .pids file; falling back to port sweep." "Red"
+        Write-StopLog "  Warning: Could not parse .pids file; falling back to app port sweep." "Red"
     }
-
-    Remove-Item -Path $pidFile -Force -ErrorAction SilentlyContinue
-    Write-StopLog "  Removed PID state file ($pidFile)." "DarkGray"
 } else {
-    Write-StopLog "No .pids file found at $pidFile. Checking for orphaned port listeners..." "DarkGray"
+    Write-StopLog "No .pids file found at $pidFile. Checking for orphaned app port listeners..." "DarkGray"
 }
 
-# 2. Secondary Safety Sweep: Ensure no orphaned child processes hold project ports
-foreach ($port in $FallbackPorts) {
+# Strictly exclude LoggerPort from app port sweeps
+$appPorts = @($appPorts | Where-Object { $_ -ne $loggerPort } | Select-Object -Unique)
+
+Write-StopLog "[1/4] Stopping application services (Frontend -> Backend)..." "Cyan"
+if ($frontendPid -and (Stop-PidTree -TargetPid $frontendPid -Label "Frontend")) {
+    $stoppedAny = $true
+}
+if ($backendPid -and (Stop-PidTree -TargetPid $backendPid -Label "Backend")) {
+    $stoppedAny = $true
+}
+
+foreach ($port in $appPorts) {
     $listeners = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
         Select-Object -ExpandProperty OwningProcess -Unique
     foreach ($owningPid in $listeners) {
-        if ($owningPid -and $owningPid -gt 4) {
-            if (Stop-PidTree -TargetPid $owningPid -Label "Orphaned Port $port") {
+        if ($owningPid -and $owningPid -gt 4 -and $owningPid -ne $loggerPid -and $owningPid -ne $shipperPid) {
+            if (Stop-PidTree -TargetPid $owningPid -Label "App Port $port") {
                 $stoppedAny = $true
             }
         }
     }
 }
 
-if ($stoppedAny) {
-    Start-Sleep -Milliseconds 300
-    Write-StopLog "[✔] All application services stopped cleanly." "Green"
+# 2. Confirm EVERY app process & app port is completely shut down before touching logger
+Write-StopLog "[2/4] Confirming all application processes and ports have exited..." "Cyan"
+$appsConfirmedStopped = Wait-AppsConfirmedStopped -AppPids @($frontendPid, $backendPid) -AppPorts $appPorts -TimeoutMs 5000
+if (-not $appsConfirmedStopped) {
+    Write-Host "[ERROR] ERROR: Application process or port did not finish shutting down within 5s. Keeping VictoriaLogs running so logs are preserved!" -ForegroundColor Red
+    exit 1
+}
+Write-StopLog "  OK: All app processes and ports confirmed closed." "Green"
+
+# 3. Drain & flush trailing app logs, then stop log shipper
+if ($shipperPid -and ($null -ne (Get-Process -Id $shipperPid -ErrorAction SilentlyContinue))) {
+    Write-StopLog "[3/4] Flushing final shutdown logs and stopping log shipper (PID $shipperPid)..." "Cyan"
+    if ($stopSentinel) {
+        $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+        $sentinelDir = Split-Path -Parent $stopSentinel
+        if ($sentinelDir -and (Test-Path $sentinelDir)) {
+            [System.IO.File]::WriteAllText($stopSentinel, [DateTime]::UtcNow.ToString("o"), $utf8NoBom)
+        }
+    }
+
+    $flushDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    while ([DateTime]::UtcNow -lt $flushDeadline) {
+        $shipAlive = $null -ne (Get-Process -Id $shipperPid -ErrorAction SilentlyContinue)
+        $flushAck = $flushDoneFile -and (Test-Path $flushDoneFile)
+        if ((-not $shipAlive) -or $flushAck) { break }
+        Start-Sleep -Milliseconds 100
+    }
+
+    if ($null -ne (Get-Process -Id $shipperPid -ErrorAction SilentlyContinue)) {
+        Stop-PidTree -TargetPid $shipperPid -Label "Log Shipper" | Out-Null
+    }
+    $stoppedAny = $true
 } else {
-    Write-StopLog "[✔] No active application services were running." "Green"
+    Write-StopLog "[3/4] No active log shipper process." "DarkGray"
+}
+
+foreach ($sentinelPath in @($stopSentinel, $flushDoneFile)) {
+    if ($sentinelPath -and (Test-Path $sentinelPath)) {
+        Remove-Item -Path $sentinelPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# 4. Stop VictoriaLogs LAST (only after apps are confirmed stopped AND logs flushed)
+if ($KeepLogger) {
+    Write-StopLog "[4/4] -KeepLogger set: leaving VictoriaLogs running at http://127.0.0.1:$loggerPort/select/vmui/" "Yellow"
+} elseif ($loggerPid -and ($loggerOwned -or (Test-Path $pidFile))) {
+    Write-StopLog "[4/4] Stopping VictoriaLogs last (PID $loggerPid)..." "Cyan"
+    if (Stop-PidTree -TargetPid $loggerPid -Label "VictoriaLogs") {
+        $stoppedAny = $true
+    }
+    $vlStopped = Wait-AppsConfirmedStopped -AppPids @($loggerPid) -AppPorts @($loggerPort) -TimeoutMs 3000
+    if ($vlStopped) {
+        Write-StopLog "  OK: VictoriaLogs stopped cleanly after app shutdown & log flush." "Green"
+    } else {
+        Write-StopLog "  WARN: VictoriaLogs PID $loggerPid may still be releasing disk locks." "Yellow"
+    }
+} else {
+    Write-StopLog "[4/4] No managed VictoriaLogs PID to stop." "DarkGray"
+}
+
+if (Test-Path $pidFile) {
+    Remove-Item -Path $pidFile -Force -ErrorAction SilentlyContinue
+    Write-StopLog "  Removed PID state file ($pidFile)." "DarkGray"
+}
+
+if ($stoppedAny) {
+    Write-StopLog "[OK] Shutdown sequence complete (Apps -> Shipper Flush -> Logger Last)." "Green"
+} else {
+    Write-StopLog "[OK] No active application or logger services were running." "Green"
 }

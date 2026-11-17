@@ -11,26 +11,26 @@ This document serves as the **single unified rulebook** for building, running, a
 | **[BACKEND_TECHSTACK.md](./BACKEND_TECHSTACK.md)** | Rust Backend (`Axum` + `Tokio` + `SQLx` + `Mimalloc`) | Sub-ms p99 latency, 10–30 MB idle RAM, in-process SQLite WAL mode, cascading YAML config, `--release` (`opt-level = 3`, fat LTO) compilation. |
 | **[FRONTEND_TECHSTACK.md](./FRONTEND_TECHSTACK.md)** | Web SPA (`SolidJS` + `Vite` + `Tailwind` + `WAAPI`) | Zero Virtual DOM, fine-grained signals (`createSignal`), < 25 KB gzipped bundle, compositor-thread WAAPI animations, never destructure props. |
 | **[MOBILE_TECHSTACK.md](./MOBILE_TECHSTACK.md)** | Mobile App (`Flutter Impeller` + `Dart AOT` + `Drift`) | Locked 60–120Hz Vulkan/Metal rendering, offline pre-compiled shaders, `signals_flutter` leaf updates (`Watch`), background-isolate C FFI SQLite WAL. |
-| **[build-start-separation](./build-start-separation/SKILL.md)** | 6-Script Lifecycle (`build`, `start`, `stop` in `.ps1` & `.sh`) | Zero-Assumption toolchain checklist in `build`, 100% production execution in `start` (stores `.pids`), deterministic PID tree termination in `stop`. |
+| **[build-start-separation](./build-start-separation/SKILL.md)** | 3-Script Lifecycle per Target OS (`build`, `start`, `stop`) | Zero-Assumption toolchain checklist in `build`, 100% production execution in `start` (stores `.pids`), deterministic PID tree termination in `stop` (`.ps1` for Windows, `.sh` for Linux/macOS, or both). |
 | **[responsive-ui-audit](./responsive-ui-audit/SKILL.md)** | Responsive Layout & Visual Polish (`Playwright` + `MusicBotUI`) | Zero horizontal overflow across 8 viewports, 5px translucent custom scroller, `cubic-bezier(0.16, 1, 0.3, 1)` sliding tab pill, dynamic flex-stretch grids. |
 | **[solid-architecture](./solid-architecture/SKILL.md)** | SOLID Code Design & Agent Prompt Decomposition | Enforces SRP, OCP, LSP, ISP, and DIP across Rust, SolidJS, and Flutter using zero-cost compile-time abstractions, plus SOLID agent task decomposition. |
-| **[OBSERVABILITY_MIGRATION.md](./OBSERVABILITY_MIGRATION.md)** | Decoupled Observability (`systemd-journald` + `VictoriaLogs`) | 100% local compressed structured logging via `journald` -> `systemd-journal-upload` -> standalone `VictoriaLogs` (`127.0.0.1:9428`), zero flat `nohup` logs or `/api/logs` routes. |
+| **[OBSERVABILITY_MIGRATION.md](./OBSERVABILITY_MIGRATION.md)** | Decoupled Observability (`VictoriaLogs` + OS Capture) | 100% local compressed structured logging into `VictoriaLogs` (`127.0.0.1:9428`) via platform-native capture (`install.ps1` + `ship-logs.ps1` on Windows; `systemd-journald` on Linux), zero flat `nohup` logs or `/api/logs` routes. |
 
 ---
 
-## 2. Rule 1: The 6-Script Lifecycle Mandate (`build` / `start` / `stop` for Windows & Linux)
+## 2. Rule 1: Target-Platform Lifecycle Mandate (`build` / `start` / `stop`)
 
-Every project MUST include **six root lifecycle scripts** covering **both Windows PowerShell (`.ps1`) and Linux/macOS Bash (`.sh`)**:
+Every project MUST include the **three root lifecycle scripts (`build`, `start`, `stop`) for each target OS it runs on** (`.ps1` for Windows-only projects, `.sh` for Linux/macOS-only projects, or all six when supporting both):
 
 ```text
 <project-root>/
-├── build.ps1      # [Windows] Zero-Assumption Toolchain Checklist + Production Build
-├── start.ps1      # [Windows] 100% Optimized Production Runner (writes .pids)
-├── stop.ps1       # [Windows] Deterministic Process Tree Stopper (reads .pids)
-├── build.sh       # [Linux]   Zero-Assumption Toolchain Checklist + Production Build
-├── start.sh       # [Linux]   100% Optimized Production Runner (writes .pids)
-├── stop.sh        # [Linux]   Deterministic Process Tree Stopper (reads .pids)
-└── .pids          # [Runtime] Active process IDs written by start, consumed by stop
+├── build.ps1      # [Windows target] Zero-Assumption Toolchain Checklist + Production Build
+├── start.ps1      # [Windows target] 100% Optimized Production Runner (writes .pids)
+├── stop.ps1       # [Windows target] Deterministic Process Tree Stopper (reads .pids)
+├── build.sh       # [Linux target]   Zero-Assumption Toolchain Checklist + Production Build
+├── start.sh       # [Linux target]   100% Optimized Production Runner (writes .pids)
+├── stop.sh        # [Linux target]   Deterministic Process Tree Stopper (reads .pids)
+└── .pids          # [Runtime]        Active process IDs written by start, consumed by stop
 ```
 
 ### 2.1 Zero-Assumption Build Script (`build.ps1` & `build.sh`)
@@ -134,24 +134,34 @@ When an AI coding agent works on a project governed by these rules:
 
 ---
 
-## 7. Rule 6: Decoupled Observability & Mandatory Instrumentation (`systemd-journald` + `VictoriaLogs`)
+## 7. Rule 6: Decoupled Observability & Mandatory Instrumentation (`VictoriaLogs` + OS-Native Capture)
 
-Production debugging must never rely on guesswork or ad-hoc `nohup` text files. Every backend service runs with OS-level log capture and **plentiful, meaningful structured instrumentation**.
+Production debugging must never rely on guesswork or ad-hoc `nohup` text files. Every backend service runs with platform-native log capture into `VictoriaLogs` (`127.0.0.1:9428`) and **plentiful, meaningful structured instrumentation**. Choose **7.2 (Linux)**, **7.3 (Windows)**, or both according to your project's target OS—single-OS projects do NOT need scripts or units for unsupported operating systems.
 
-### 7.1 Mandatory Extensive & Meaningful Code Logging
+### 7.1 Mandatory Extensive & Meaningful Code Logging (All Platforms)
 Whenever you write or modify application code, **instrument thoroughly so logs answer *what happened*, *why*, and *how long it took***:
-1. **Structured JSON Output in Production:** Use `tracing` + `tracing-subscriber` with `.json()` when `PROFILE=PROD` so every log event emits queryable JSON columns (`timestamp`, `level`, `target`, `duration_ms`, `guild_id`, `status`, `client`, etc.).
-2. **Latency & External Dependency Spans:** Record explicit `duration_ms` timings on HTTP handlers (`TraceLayer` / latency middleware), database calls, external CLI pipelines (`yt-dlp`, `ffmpeg`), and third-party APIs (Gemini, Discord, lyrics providers).
+1. **Structured JSON Output in Production:** Use `tracing` + `tracing-subscriber` with `.json()` when running in production (`PROFILE=PROD` or `LOG_FORMAT=json`) so every log event emits queryable JSON columns (`timestamp`, `level`, `target`, `duration_ms`, `status`, `client`, etc.).
+2. **Latency & External Dependency Spans:** Record explicit `duration_ms` timings on HTTP handlers (`TraceLayer` / latency middleware), database calls, external CLI pipelines (`ffmpeg`, `yt-dlp`), and third-party APIs.
 3. **Log Every State Transition, Retry, Fallback & Error:**
    * State changes MUST log `old -> new (reason)`.
    * Fallback cascades (e.g., `yt-dlp` player clients, AI model 404 auto-discovery) MUST log `warn!` explaining *which* primary path failed, *why*, and *what* fallback is being attempted next.
    * Failures MUST log `error!` with actionable context (IDs, status codes, truncated upstream error text) — never swallow errors or empty streams silently.
-4. **Preserve Subprocess `stderr` & Release Symbols:** Spawned child processes (`ffmpeg`, `yt-dlp`) MUST inherit `stderr` (`Stdio::inherit()`) or explicitly log `stderr` on failure so `journald` captures tool diagnostics. Keep `strip = "debuginfo"` in `Cargo.toml`, install a panic hook, and set `RUST_BACKTRACE=1` so crashes preserve readable backtraces.
+4. **Preserve Subprocess `stderr` & Release Symbols:** Spawned child processes (`ffmpeg`, `yt-dlp`) MUST inherit `stderr` (`Stdio::inherit()`) or explicitly log `stderr` on failure so the host collector (`ship-logs.ps1` on Windows / `journald` on Linux) captures tool diagnostics. Keep `strip = "debuginfo"` in `Cargo.toml`, install a panic hook, and set `RUST_BACKTRACE=1` so crashes preserve readable backtraces.
 
-### 7.2 `systemd-journald` → `systemd-journal-upload` → Standalone `VictoriaLogs`
+### 7.2 Linux Targets Only: `systemd-journald` → `systemd-journal-upload` → `VictoriaLogs`
 * **No Flat `nohup` Logs or Unauthenticated `/api/logs` Routes:** Let `systemd` capture `stdout`/`stderr` directly (`StandardOutput=journal`, `StandardError=journal`, `SyslogIdentifier=<app>`) — see [OBSERVABILITY_MIGRATION.md](./OBSERVABILITY_MIGRATION.md) and [BACKEND_TECHSTACK.md Section 12](./BACKEND_TECHSTACK.md#12-decoupled-production-observability--telemetry-standard).
 * **One-Line Host Setup (Once per Linux Server):**
   ```bash
   curl -fsSL https://raw.githubusercontent.com/AnhNTSE183225/techstack/main/observability/install.sh | sudo bash
   ```
 * **Inspect Logs Locally Over SSH Tunnel (`127.0.0.1:9428`):** Never expose VictoriaLogs publicly on `0.0.0.0`; inspect via [`observability/open-logs.ps1`](./observability/open-logs.ps1) or [`observability/open-logs.sh`](./observability/open-logs.sh) (`http://localhost:9428/select/vmui/` or `/select/logsql/query`).
+
+### 7.3 Windows Local Observability Lifecycle (Logger First, Stop Last)
+Because `systemd-journald` does not exist on Windows, Windows hosts and local dev/PROD environments use standalone `victoria-logs-prod.exe` + [`observability/ship-logs.ps1`](./observability/ship-logs.ps1) bound to `127.0.0.1:9428` (no admin/UAC required, installed via [`observability/install.ps1`](./observability/install.ps1)):
+* **Logger Starts FIRST (`start.ps1`):** `start.ps1` MUST start `victoria-logs-prod.exe`, wait for `http://127.0.0.1:9428/health` `200 OK`, and start `ship-logs.ps1` **before** launching Backend or Frontend so startup crashes, panics, and config errors are never lost.
+* **Apps Stopped & Confirmed Dead BEFORE Logger Shutdown (`stop.ps1`):** `stop.ps1` MUST:
+  1. Kill all application PIDs and sweep application ports (explicitly **excluding** `logger_port` `9428`).
+  2. **Poll and confirm** every application PID and port is dead before proceeding (if any app lingers, abort logger teardown so shutdown failures stay captured).
+  3. Trigger the `.stop-shipper` -> `.shipper-flushed` handshake so `ship-logs.ps1` flushes all trailing `stdout`/`stderr` bytes to `VictoriaLogs`.
+  4. Stop `VictoriaLogs` **last** (or preserve it when `-KeepLogger` is passed).
+
