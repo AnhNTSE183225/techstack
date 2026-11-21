@@ -574,6 +574,9 @@ In accordance with [solid-architecture/SKILL.md](file:///C:/GIT/TECHSTACK/solid-
    * Keep traits narrow and role-specific (e.g., split `TelemetryReader` from `TelemetryWriter`) so read-only handlers or background tasks never depend on mutation methods they do not invoke.
 5. **Dependency Inversion Principle (DIP):**
    * Domain services depend on **Rust Traits** (`<R: ItemRepository>`) and strongly-typed `AppConfig` (`config/default.yaml`)—never on hardcoded file paths, connection strings, or concrete third-party driver structs. Prefer monomorphized generics (`<R: Trait>`) over `Box<dyn Trait>` on hot paths to eliminate heap allocation and vtable indirection.
+6. **Type-Safe Authorization Extractors (Zero Opt-In Auth):**
+   * Privileged routes MUST enforce authorization via compile-time Axum `FromRequestParts` extractors (e.g., `AuthenticatedUser`, `GuildAdmin`, `GlobalAdmin`) backed by a **single source-of-truth policy evaluator**—never by ad-hoc `let _ = extract_session(...)?;` calls or copy-pasted `is_admin` checks inside handlers.
+   * Denied privilege checks MUST emit a structured `warn!(target: "auth_audit", ...)` log and return `403 Forbidden`, and every privileged endpoint MUST be covered by automated router tests verifying `401` (unauthenticated), `403` (regular user & cross-tenant/cross-guild isolation), and `200` (authorized role).
 
 ---
 

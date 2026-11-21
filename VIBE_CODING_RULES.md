@@ -113,6 +113,8 @@ AI models do **not** naturally write SOLID code by default; without explicit gua
 5. **Dependency Inversion Principle (DIP):**
    * High-level domain services and UI stores MUST depend on **abstractions** (traits/interfaces) and **structured configuration** (`AppConfig` loaded from `config/default.yaml` or `config/default.json`)—never on hardcoded URLs, file paths, or low-level driver internals.
    * **Performance Guarantee:** Implement DIP using **compile-time generics (`<R: Repository>`) and static traits/interfaces** rather than heavy runtime reflection or unnecessary heap vtables.
+6. **Type-Safe Authorization & Single-Source-of-Truth RBAC:**
+   * Enforce endpoint authorization via compile-time request extractors (`AuthenticatedUser`, `GuildAdmin`, `GlobalAdmin`) rather than opt-in manual session checks (`let _ = extract_session(...)?;`) or duplicated `is_admin` conditions. Mirror the exact same role flag in Web/Mobile UI controls (disabled + rollback on `403`) and back every privileged route with automated `401`/`403`/`200` and cross-tenant tests.
 
 ### 5.2 Level 2 — SOLID AI Task & Prompt Decomposition
 As illustrated in [solid-prompt-engineering.jpg](./solid-architecture/resources/solid-prompt-engineering.jpg), when decomposing complex user requests or delegating to subagents:
