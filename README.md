@@ -62,3 +62,5 @@ irm https://raw.githubusercontent.com/AnhNTSE183225/techstack/main/observability
 | **`build-start-separation/`** | Target-platform 3-script (`build` / `start` / `stop` for `.ps1` and/or `.sh`) lifecycle standard & templates |
 | **`solid-architecture/`** | Zero-cost SOLID architecture skill & cross-stack reference |
 | **`responsive-ui-audit/`** | Responsive layout & mobile overflow audit skill |
+| **`project-checklist/`** | Mandatory gitignored `CHECKLIST.md` compliance tracker & template (greenfield + re-evaluation) |
+| **`security-audit/`** | 3-tier security audit skill (`Gitleaks` → `Vibe Security` → `Cloudflare Security Audit`) with gitignored `vendor/` setup scripts |

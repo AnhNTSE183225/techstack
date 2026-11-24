@@ -18,7 +18,8 @@ param(
     [int]$BackendPort = 8080,
     [int]$FrontendPort = 5173,
     [int]$LoggerPort = 9428,
-    [switch]$SkipLogger
+    [switch]$SkipLogger,
+    [switch]$SkipTailscale
 )
 
 $ErrorActionPreference = "Stop"
@@ -108,7 +109,8 @@ function Save-PidFile {
         [int]$BackPort,
         [int]$FrontPort,
         [string]$StopSentinel,
-        [string]$FlushDoneFile
+        [string]$FlushDoneFile,
+        [bool]$TailscaleServe = $false
     )
     $payload = [ordered]@{
         logger_pid      = $LoggerPid
@@ -119,6 +121,7 @@ function Save-PidFile {
         frontend_pid    = $FrontendPid
         backend_port    = $BackPort
         frontend_port   = $FrontPort
+        tailscale_serve = $TailscaleServe
         logs_dir        = $logsDir
         stop_sentinel   = $StopSentinel
         flush_done_file = $FlushDoneFile
@@ -127,7 +130,7 @@ function Save-PidFile {
     }
     $json = $payload | ConvertTo-Json -Depth 4
     [System.IO.File]::WriteAllText($pidFile, $json, $utf8NoBom)
-    Write-Host "  [PID State] Saved .pids (Logger: $LoggerPid, Shipper: $ShipperPid, Backend: $BackendPid, Frontend: $FrontendPid)" -ForegroundColor DarkGray
+    Write-Host "  [PID State] Saved .pids (Logger: $LoggerPid, Shipper: $ShipperPid, Backend: $BackendPid, Frontend: $FrontendPid, TailscaleServe: $TailscaleServe)" -ForegroundColor DarkGray
 }
 
 function Test-ProcessRunning {
@@ -303,7 +306,30 @@ if (-not $SkipLogger) {
     }
 }
 
+# Discover Tailscale MagicDNS hostname before starting backend (for HTTPS PWA/CORS origin)
+$tsCmd = $null
+$tailscaleDnsHost = $null
+$tailscaleServeActive = $false
+if (-not $SkipTailscale) {
+    $tsCmd = Get-Command tailscale -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($tsCmd) {
+        try {
+            $tsStatusRaw = & $tsCmd.Source status --json 2>$null
+            if ($LASTEXITCODE -eq 0 -and $tsStatusRaw) {
+                $tsStatus = $tsStatusRaw | ConvertFrom-Json
+                if ($tsStatus.Self -and $tsStatus.Self.DNSName) {
+                    $tailscaleDnsHost = ([string]$tsStatus.Self.DNSName).TrimEnd('.')
+                }
+            }
+        } catch {}
+    }
+}
+
 Write-Host "[3/3] Starting Application in 100% Optimized Production Mode..." -ForegroundColor Green
+
+if ($tailscaleDnsHost -and -not $env:APP__SERVER__FRONTEND_URL) {
+    $env:APP__SERVER__FRONTEND_URL = "https://$tailscaleDnsHost"
+}
 
 $backProc = Start-Process `
     -FilePath $backendExe `
@@ -343,16 +369,45 @@ for ($i = 0; $i -lt 50; $i++) {
     } catch {}
 }
 
+# Configure Tailscale Serve HTTPS proxy if available (required for mobile PWA install & Web Push)
+if (-not $SkipTailscale -and $tsCmd) {
+    try {
+        $null = & $tsCmd.Source serve --bg --yes --https=443 "http://127.0.0.1:$FrontendPort" 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $tailscaleServeActive = $true
+            Save-PidFile `
+                -LoggerPid $loggerPid `
+                -LoggerOwned $loggerOwned `
+                -LogPort $LoggerPort `
+                -ShipperPid $shipperPid `
+                -BackendPid $backProc.Id `
+                -FrontendPid $frontProc.Id `
+                -BackPort $BackendPort `
+                -FrontPort $FrontendPort `
+                -StopSentinel $stopSentinel `
+                -FlushDoneFile $flushDoneFile `
+                -TailscaleServe $true
+        } else {
+            Write-Host "  WARN: Tailscale Serve could not be enabled (exit code $LASTEXITCODE); continuing with local HTTP." -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "  WARN: Tailscale Serve setup failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
 $launchUrl = "http://localhost:$FrontendPort"
 Write-Host ""
 Write-Host "Application is ready!" -ForegroundColor Green
 Write-Host "  App UI  : $launchUrl" -ForegroundColor Cyan
+if ($tailscaleServeActive -and $tailscaleDnsHost) {
+    Write-Host "  HTTPS   : https://$tailscaleDnsHost" -ForegroundColor Green
+}
 if (-not $SkipLogger) {
     Write-Host "  Logs UI : http://127.0.0.1:$LoggerPort/select/vmui/" -ForegroundColor Cyan
 }
 $tsIp = (Get-NetIPAddress -InterfaceAlias "*Tailscale*" -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress -First 1)
 if ($tsIp) {
-    Write-Host "  Tailscale: $($launchUrl -replace 'localhost', $tsIp)" -ForegroundColor Cyan
+    Write-Host "  Tailscale IP: $($launchUrl -replace 'localhost', $tsIp)" -ForegroundColor Cyan
 }
 Write-Host "  PIDs    : Logger=$loggerPid | Shipper=$shipperPid | Backend=$($backProc.Id) | Frontend=$($frontProc.Id)" -ForegroundColor DarkGray
 Write-Host ""

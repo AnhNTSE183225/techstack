@@ -103,16 +103,18 @@ Every `build.ps1` and `build.sh` MUST verify the following checklist in order be
 2. **Artifact Verification (`Ensure-BuildArtifacts`):** Check if `frontend/dist/index.html` and `backend/target/release/<binary>` exist. Run `build` automatically **only** if missing.
 3. **Start Observability Stack FIRST (Windows `start.ps1`):** Boot `victoria-logs-prod.exe` on `127.0.0.1:9428`, wait for `/health` `200 OK`, and start `observability/ship-logs.ps1` before any app starts so startup errors and panics are never lost.
 4. **Launch Pre-Compiled Production Artifacts:** Spawn the release binary (`RUST_LOG=info`, `LOG_FORMAT=json`) and static preview server (`pnpm run preview`), redirecting Windows `stdout`/`stderr` to `.logs\*.log` (or relying on `systemd-journald` on Linux).
-5. **Persist `.pids` State File:** Immediately write `logger_pid`, `logger_owned`, `logger_port`, `shipper_pid`, `backend_pid`, `frontend_pid`, `backend_port`, `frontend_port`, and `started_at` to `<repo-root>/.pids`.
-6. **Fast Readiness Probing & Teardown Trap:** Poll endpoints at 100ms intervals until `200 OK`, print clickable URLs and PIDs, and trap Ctrl+C (`SIGINT`/`SIGTERM`/`PipelineStoppedException`) to invoke `stop.ps1` / `stop.sh`.
+5. **Persist `.pids` State File:** Immediately write `logger_pid`, `logger_owned`, `logger_port`, `shipper_pid`, `backend_pid`, `frontend_pid`, `backend_port`, `frontend_port`, `tailscale_serve`, and `started_at` to `<repo-root>/.pids`.
+6. **Optional Tailscale Serve HTTPS Proxy (Mobile & PWA Access):** When Tailscale is installed on Windows (and `-SkipTailscale` is not passed), discover the machine's MagicDNS hostname via `tailscale status --json` (`Self.DNSName`), expose the frontend over valid TLS with `tailscale serve --bg --yes --https=443 "http://127.0.0.1:$FrontendPort"`, set `APP__SERVER__FRONTEND_URL="https://<dns-host>"` so CORS and Web Push URLs match, and allow `.ts.net` in Vite's `allowedHosts: [".ts.net", "localhost", "127.0.0.1"]`. This provides a trusted HTTPS origin for iOS/Android PWA installation and Web Push testing on phones.
+7. **Fast Readiness Probing & Teardown Trap:** Poll endpoints at 100ms intervals until `200 OK`, print clickable URLs (including `https://<dns-host>`) and PIDs, and trap Ctrl+C (`SIGINT`/`SIGTERM`/`PipelineStoppedException`) to invoke `stop.ps1` / `stop.sh`.
 
 👉 See [examples/start.ps1.template](./examples/start.ps1.template) and [examples/start.sh.template](./examples/start.sh.template).
 
 ---
 
 ### Step 3: Structure the Deterministic Stop Script (`stop.ps1` & `stop.sh`)
-1. **Read `.pids` File:** Parse `backend_pid`, `frontend_pid`, `logger_pid`, `logger_owned`, `logger_port`, and `shipper_pid` from `<repo-root>/.pids`.
-2. **Kill Application Process Trees FIRST:**
+1. **Read `.pids` File:** Parse `backend_pid`, `frontend_pid`, `tailscale_serve`, `logger_pid`, `logger_owned`, `logger_port`, and `shipper_pid` from `<repo-root>/.pids`.
+2. **Reset Tailscale Serve (If Owned) & Kill Application Process Trees FIRST:**
+   * If `tailscale_serve` is `true` in `.pids`, run `tailscale serve reset` so the host proxy is cleaned up without disturbing unrelated configs when disabled.
    * **Windows (`stop.ps1`):** Execute `taskkill.exe /PID <pid> /T /F` and `Stop-Process -Id <pid> -Force` on Frontend and Backend PIDs.
    * **Linux (`stop.sh`):** Execute `pkill -TERM -P <pid>` and `kill -TERM <pid>`, escalating to `kill -KILL` after 200ms if still alive.
 3. **Fallback App Port Sweep & Confirmed Shutdown (Windows):** Check application ports (`8080`, `5173`, etc. — **excluding** `logger_port` `9428`), terminate survivors, and **poll to confirm every application PID & port is completely dead**. If any app lingers, abort logger teardown so shutdown diagnostics remain captured.

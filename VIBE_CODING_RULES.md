@@ -15,6 +15,8 @@ This document serves as the **single unified rulebook** for building, running, a
 | **[responsive-ui-audit](./responsive-ui-audit/SKILL.md)** | Responsive Layout & Visual Polish (`Playwright` + `MusicBotUI`) | Zero horizontal overflow across 8 viewports, 5px translucent custom scroller, `cubic-bezier(0.16, 1, 0.3, 1)` sliding tab pill, dynamic flex-stretch grids. |
 | **[solid-architecture](./solid-architecture/SKILL.md)** | SOLID Code Design & Agent Prompt Decomposition | Enforces SRP, OCP, LSP, ISP, and DIP across Rust, SolidJS, and Flutter using zero-cost compile-time abstractions, plus SOLID agent task decomposition. |
 | **[OBSERVABILITY_MIGRATION.md](./OBSERVABILITY_MIGRATION.md)** | Decoupled Observability (`VictoriaLogs` + OS Capture) | 100% local compressed structured logging into `VictoriaLogs` (`127.0.0.1:9428`) via platform-native capture (`install.ps1` + `ship-logs.ps1` on Windows; `systemd-journald` on Linux), zero flat `nohup` logs or `/api/logs` routes. |
+| **[project-checklist](./project-checklist/SKILL.md)** | Repo Compliance Tracker (`CHECKLIST.md`) | Mandatory gitignored `CHECKLIST.md` in every repo rolling up all TECHSTACK rules; executed once on greenfield kickoff and re-run on user-requested project re-evaluation. |
+| **[security-audit](./security-audit/SKILL.md)** | 3-Tier Security Audit (`Gitleaks` + `Vibe Security` + `Cloudflare Audit`) | Sequential security gate: (1) Gitleaks secret scan, (2) Vibe Security 9-area review, (3) Cloudflare heavy adversarial multi-phase audit. Upstream skills stay in gitignored `security-audit/vendor/`. |
 
 ---
 
@@ -166,4 +168,24 @@ Because `systemd-journald` does not exist on Windows, Windows hosts and local de
   2. **Poll and confirm** every application PID and port is dead before proceeding (if any app lingers, abort logger teardown so shutdown failures stay captured).
   3. Trigger the `.stop-shipper` -> `.shipper-flushed` handshake so `ship-logs.ps1` flushes all trailing `stdout`/`stderr` bytes to `VictoriaLogs`.
   4. Stop `VictoriaLogs` **last** (or preserve it when `-KeepLogger` is passed).
+
+---
+
+## 8. Rule 7: Mandatory Repo Compliance Tracker (`CHECKLIST.md`)
+
+Every repository built or maintained under this constitution MUST enforce [project-checklist/SKILL.md](./project-checklist/SKILL.md):
+1. **Create & Gitignore `CHECKLIST.md`:** Generate `<project-root>/CHECKLIST.md` from [project-checklist/CHECKLIST.template.md](./project-checklist/CHECKLIST.template.md) and ensure `CHECKLIST.md` is added to `<project-root>/.gitignore`.
+2. **Greenfield Execution (From 0):** Initialize `CHECKLIST.md` at project start and check off each requirement as implementation and verification complete so no specification item is forgotten.
+3. **On-Demand Re-Evaluation:** Whenever the user requests a project re-evaluation, re-verify every applicable item in `CHECKLIST.md` against the live codebase and update findings and checkmarks.
+
+---
+
+## 9. Rule 8: 3-Tier Security Audit Gate (`Gitleaks` → `Vibe Security` → `Cloudflare Audit`)
+
+Every project MUST complete the 3-tier security pipeline documented in [security-audit/SKILL.md](./security-audit/SKILL.md) (and tracked inside `CHECKLIST.md`) before production release and during every re-evaluation:
+1. **Tier 1 — Gitleaks (`https://github.com/gitleaks/gitleaks`):** Scan working tree and Git history for hardcoded secrets, passwords, and API keys.
+2. **Tier 2 — Vibe Security Skill (`https://github.com/raroque/vibe-security-skill`):** Audit all 9 AI-coding security areas (*Secrets, DB Access Control, Auth, Rate Limiting, Payments, Mobile, AI/LLM, Deployment Config, Input Validation*).
+3. **Tier 3 — Cloudflare Security Audit Skill (`https://github.com/cloudflare/security-audit-skill`):** Execute the heavy multi-phase adversarial audit (*Reconnaissance → Coverage-Led Hunting → Independent Verification → Findings*) last.
+4. **Zero-Plagiarism Vendor Rule:** Third-party security skills MUST ONLY be cloned into the gitignored `C:\GIT\TECHSTACK\security-audit\vendor\` directory (via `setup-security-skills.ps1` / `setup-security-skills.sh`) and MUST NEVER be committed to Git.
+
 
