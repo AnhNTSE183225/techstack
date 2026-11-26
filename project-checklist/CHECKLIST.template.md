@@ -31,6 +31,7 @@
 - [ ] Web SPA built with SolidJS + Vite + Tailwind CSS + WAAPI transitions (zero prop destructuring; `<Show>` / `<For>` control flow)
 - [ ] Vite production preview proxy uses unbounded `keepAliveAgent` (`maxSockets: Infinity`)
 - [ ] PWA manifest (`display: standalone`) + Service Worker configured (if Web Push / installable PWA)
+- [ ] Mobile/PWA power hygiene: `EventSource`/`WebSocket` & `setInterval` pause on `document.hidden` (`visibilitychange`), `onerror` uses capped exponential backoff, `sw.js` `push` has zero background `fetch()` loops, backend sets `Urgency: high`
 - [ ] Mobile (`Flutter Impeller` + `signals_flutter` + `Drift`) verified *(or mark N/A if no mobile target)*
 
 ## 4. SOLID Architecture & Deterministic FSM (`solid-architecture` & Rule 2)

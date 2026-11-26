@@ -188,4 +188,25 @@ Every project MUST complete the 3-tier security pipeline documented in [security
 3. **Tier 3 — Cloudflare Security Audit Skill (`https://github.com/cloudflare/security-audit-skill`):** Execute the heavy multi-phase adversarial audit (*Reconnaissance → Coverage-Led Hunting → Independent Verification → Findings*) last.
 4. **Zero-Plagiarism Vendor Rule:** Third-party security skills MUST ONLY be cloned into the gitignored `C:\GIT\TECHSTACK\security-audit\vendor\` directory (via `setup-security-skills.ps1` / `setup-security-skills.sh`) and MUST NEVER be committed to Git.
 
+---
+
+## 10. Rule 9: Mobile & PWA Power / Battery Efficiency Contract
+
+On mobile browsers and Android WebAPKs (PWAs), all JavaScript, SSE/WebSocket streams, timers, and Service Workers execute inside the host browser (`com.android.chrome`), meaning background loops directly drain mobile battery and trigger OS throttling. Every Web/PWA and Mobile client MUST enforce:
+
+1. **Visibility-Gated Realtime Streams (`EventSource` / `WebSocket`):**
+   * Real-time streams MUST listen to `visibilitychange` (and `pagehide` / `freeze`) and **immediately close active connections** (`teardownStreams()`) when `document.hidden === true`.
+   * Reconnect and perform a single catch-up REST refresh when `document.hidden === false`. Never leave `EventSource` or `WebSocket` open in the background when Web Push (`sw.js`) already handles background alerts.
+   * Error handlers (`onerror`) MUST use **exponential backoff with jitter** (e.g., `5s -> 10s -> 20s -> 60s` cap) and **halt completely** if `document.hidden === true`—never use a fixed tight `setTimeout(..., 5000)` retry loop.
+2. **Zero Unpaused Background Timers & Animations:**
+   * All `setInterval` / `requestAnimationFrame` loops (clocks, countdowns, polling) MUST pause or clear when `document.hidden === true` and sync immediately on visibility return.
+3. **Lightweight Service Worker `push` & High-Urgency Delivery:**
+   * Service Worker `push` handlers (`sw.js`) MUST NOT run background `fetch()` retries, timers, or heavy work; parse the encrypted push payload directly and call `self.registration.showNotification(...)` inside `event.waitUntil(...)`.
+   * Backend Web Push dispatch (`push_service.rs`) MUST set `Urgency: high` on time-sensitive alerts so FCM pierces Android Doze without requiring users to disable Doze globally.
+4. **Media & `AudioTrack` Cleanup:**
+   * Release `<audio>` / `<video>` / `MediaSession` / `WakeLock` handles on route change, pause, or `visibilitychange` so Android does not hold an orphaned `AudioMix` partial wakelock.
+5. **ADB & Code Audit Verification:**
+   * Verify mobile power behavior with read-only ADB diagnostics (`dumpsys batterystats --charged`, `dumpsys netpolicy`, `dumpsys audio`) alongside code audits for `EventSource`, `WebSocket`, `setInterval`, `visibilitychange`, and `sw.js` (see [FRONTEND_TECHSTACK.md Section 14](./FRONTEND_TECHSTACK.md#14-mobile--pwa-power-efficiency-zero-background-battery-leaks)).
+
+
 

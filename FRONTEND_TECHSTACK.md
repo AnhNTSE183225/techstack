@@ -453,5 +453,75 @@ In accordance with [solid-architecture/SKILL.md](file:///C:/GIT/TECHSTACK/solid-
 5. **Dependency Inversion Principle (DIP):**
    * Reactive stores in `src/stores/` depend on typed API client interfaces (`src/api/`) and environment configs—never on hardcoded URLs or raw `window.fetch` implementation details.
 
+---
+
+## 13. Human-Readable Error Messages (Never Surface Raw HTTP Codes)
+
+* **Rule:** UI components and API clients (`src/api/client.ts`) MUST NEVER surface raw status strings such as `"HTTP 404"`, `"HTTP 502"`, or `"Failed to fetch"` to users.
+* **Centralized Status Mapping:** Always check structured backend messages (`detail` / `message` / `error`) first, and fall back to a human-readable status lookup table:
+  * `400` → *"Please check your input and try again."*
+  * `401` → *"Your session has expired. Please sign in again."*
+  * `403` → *"You don't have permission to perform this action."*
+  * `404` → *"The requested item or endpoint could not be found."*
+  * `408` → *"The request timed out. Please try again."*
+  * `409` → *"This conflicts with existing data. Please refresh and try again."*
+  * `429` → *"Too many requests right now. Please wait a moment and try again."*
+  * `500` → *"Something went wrong on the server. Please try again."*
+  * `502` / `503` / `504` → *"The server is temporarily unreachable. Please try again in a moment."*
+* **Network / Offline Errors:** Catch `fetch` network exceptions (`TypeError`) and surface *"Unable to reach the server. Please check your connection and try again."*
+
+---
+
+## 14. Mobile & PWA Power Efficiency (Zero Background Battery Leaks)
+
+On Android, installed PWAs (Chrome WebAPKs) run their entire JS runtime, SSE/WebSocket sockets, and Service Worker inside `com.android.chrome`. Any background reconnect loop or unpaused timer drains battery under the **Chrome** app entry.
+
+### 14.1 Visibility-Gated SSE / WebSocket Lifecycle (Mandatory)
+* **Pause in Background:** When `document.hidden` becomes `true`, close all `EventSource` / `WebSocket` connections (`teardownStreams()`). Background notifications belong to Web Push (`sw.js`), not open TCP sockets.
+* **Resume on Foreground:** When `document.hidden` becomes `false`, reconnect streams and run a single REST sync.
+* **Bounded Backoff:** On `onerror`, NEVER use a fixed tight retry (e.g., `setTimeout(..., 5000)`). Guard against `document.hidden` and use capped exponential backoff (`5s` → `10s` → `20s` → `60s` max).
+
+```ts
+// Reference pattern for stores managing EventSource / WebSocket
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      teardownStreams();
+    } else if (getStoredToken()) {
+      void scheduleStore.loadAll(untrack(loadedCalendars));
+    }
+  });
+}
+```
+
+### 14.2 Timers, Service Worker & Media Rules
+1. **Pause Intervals:** `setInterval` / `requestAnimationFrame` loops must skip or clear while `document.hidden === true`.
+2. **Zero-Fetch `sw.js`:** Service Worker `push` handlers must render directly from `event.data.json()` via `self.registration.showNotification(...)` inside `event.waitUntil(...)`—avoid `fetch()` inside `push` events so background wakeups stay sub-100ms.
+3. **Media / `AudioMix` Hygiene:** Pause and clear `srcObject` / `src` on `<video>` and `<audio>` elements on unmount or `pagehide` so Android does not retain an idle `AudioTrack` (`AudioMix` wakelock).
+4. **How to Audit Power Leaks:**
+   * **Code:** Grep `frontend/src` and `public/sw.js` for `EventSource`, `WebSocket`, `setInterval`, `wakeLock`, and `fetch` inside `sw.js`, and verify each is gated by `visibilitychange` / `onCleanup`.
+   * **Android ADB (Read-Only):** Check `dumpsys batterystats --charged` (screen-off CPU/Wi-Fi & partial wakelocks), `dumpsys netpolicy` (frequent `RCVR` wakeups), and `dumpsys audio` (orphaned `AudioTrack` instances).
+
+---
+
+## 15. Mobile-First PWA Layout & Navigation Rules (Lessons Learned)
+
+When building mobile views for web/PWA apps (`< 768px`), NEVER port desktop multi-row headers, 7-column grids, or centered floating modals onto a ~390px viewport:
+
+1. **Zero Header Sprawl — Floating Bottom Capsule Navigation + FAB:**
+   * Move top-level sections (*Schedule, Split Bills, Groups, Profile*) into a bottom navigation capsule (`sticky bottom-0`, `pb-[max(20px,env(safe-area-inset-bottom))]`), and dock the primary create action (`+`) as a FAB right above the tab bar so events/content start immediately at the top.
+2. **Sheets & Full-Screen Pages Instead of Centered Modals:**
+   * **Quick views / details / pickers** (Event Details, Payment QR, Filter lists): Use bottom-anchored sheets (`rounded-t-[23.5px]`, drag handle, `env(safe-area-inset-bottom)` sticky footer).
+   * **Long multi-field forms** (Event Editor, New Split Bill): Use a full-screen page with a sticky top bar (`←` Back, Title, Primary Save) so virtual keyboards never crush or trap scroll gestures.
+   * **Single Dismiss Control:** Never render both a back arrow (`←`) and a close button (`✕`) in the same mobile header.
+3. **Mobile Calendar Views (No Squished 7-Day Grids):**
+   * **Month View:** Render colored event dots under day numbers instead of truncated 2-letter text chips, and show the selected day's agenda list directly underneath.
+   * **Week View:** Render a **rolling 3-day** column grid (`3-Day`) instead of 7 cramped columns so event titles and touch targets remain legible without horizontal cutoff.
+4. **Flatten Payment & Action Flows:**
+   * Avoid nested bordered boxes around QR codes; surface the owed amount and primary **Open Banking App** / **Pay with VietQR** CTA at the top level with safe-area bottom padding.
+
+
+
+
 
 
