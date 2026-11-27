@@ -231,6 +231,10 @@ panic = "abort"      # Strips stack-unwind tables; produces smaller, faster bina
 strip = "debuginfo"  # Strips heavy DWARF debug info while keeping symbol names for crash backtraces
 ```
 
+> [!TIP]
+> **Multi-Repo Disk Footprint Control (`~/.cargo/config.toml` + Shared Target Cache):**
+> Configure `[build] target-dir` (e.g., `"%LOCALAPPDATA%/cargo-target"` on Windows or `~/.cache/cargo-target` on Linux) and `[profile.dev] debug = "line-tables-only"` in global `~/.cargo/config.toml`, and have `build.ps1` / `build.sh` stage only the compiled release executable into `<backend>/target/release/`. This eliminates duplicate per-repository `target/debug` and `deps/` caches across projects while keeping `start.ps1` / `start.sh` paths unchanged.
+
 > [!IMPORTANT]
 > **CRITICAL PERFORMANCE RULE: Always Run & Build in Release Mode (`--release`)**
 > * **Debug Mode (`cargo run` / `cargo build`):** Defaults to `opt-level = 0` with zero inlining, no SIMD auto-vectorization, and disabled loop unrolling. While compilation is fast, compute-intensive workloads—such as image decoding/resizing (`image` crate), audio/video metadata parsing, and cryptographic hashing—run **20x to 100x slower** (e.g., downscaling a photo takes 1,500–2,000 ms in debug vs. 15–25 ms in release).

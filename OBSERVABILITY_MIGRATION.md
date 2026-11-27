@@ -210,10 +210,10 @@ irm https://raw.githubusercontent.com/AnhNTSE183225/techstack/main/observability
 
 Use the templates in [`build-start-separation/examples/start.ps1.template`](./build-start-separation/examples/start.ps1.template) and [`build-start-separation/examples/stop.ps1.template`](./build-start-separation/examples/stop.ps1.template):
 
-1. **Startup Order (`start.ps1`):**
+1. **Startup Order (`start.ps1` — Detached by Default):**
    1. Start `victoria-logs-prod.exe` bound to `127.0.0.1:9428` (or reuse an existing healthy instance on `9428`) and wait for `/health` `200 OK`.
-   2. Start `observability/ship-logs.ps1` tailing `.logs\*.log` (`FileShare.ReadWrite | FileShare.Delete` so apps never hit file locks).
-   3. Launch Backend (with `RUST_LOG=info` / `LOG_FORMAT=json`) and Frontend, redirecting `stdout`/`stderr` to `.logs\*.log`.
+   2. Start `observability/ship-logs.ps1` (`-NonInteractive`) tailing `.logs\*.log` (`FileShare.ReadWrite | FileShare.Delete` so apps never hit file locks).
+   3. Launch Backend (with `RUST_LOG=info` / `LOG_FORMAT=json`) and Frontend (`node.exe` -> `vite/bin/vite.js preview`), redirecting **`stdin` (empty `.stdin` files), `stdout`, and `stderr`** on every hidden child process so caller shells never hang on inherited stdio pipes, then exit `0` detached once `-DisableKeepAlive` health checks pass (pass `-Foreground` only to attach logs).
    4. Persist `logger_pid`, `logger_owned`, `logger_port`, `shipper_pid`, `backend_pid`, and `frontend_pid` into `.pids`.
 2. **Shutdown Order (`stop.ps1`):**
    1. Terminate Frontend & Backend process trees and sweep app ports (explicitly skipping `logger_port`).

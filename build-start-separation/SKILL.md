@@ -28,8 +28,10 @@ This specification defines the mandatory lifecycle script architecture for full-
 >    * If a missing dependency/compiler can be installed automatically by the script (`winget`, `rustup-init`, `corepack`, `apt`/`dnf`/`pacman`), it installs it and refreshes `PATH`.
 >    * If a dependency cannot be auto-installed (or auto-install fails), it MUST immediately throw a formatted, actionable fatal error stating **what is missing, why it is needed, the official download URL, and the exact manual install command**.
 >
-> 3. **100% Optimized Production Start (`start`) & Deterministic PID Stop (`stop`):**
+> 3. **100% Optimized, Detached-by-Default Production Start (`start`) & Deterministic PID Stop (`stop`):**
 >    * `start.ps1` / `start.sh` MUST NEVER run development servers (`npm run dev`, `vite`, `cargo run`). It executes ONLY pre-compiled Release binaries (`target/release/`) and minified production bundles (`dist/`).
+>    * **Detached Default (No Hung Terminals):** Running `.\start.ps1` / `./start.sh` MUST default to **detached background execution** and return exit code `0` as soon as health probes pass (requiring explicit `-Foreground` / `--foreground` to attach live logs).
+>    * **Zero Stdio Handle Leaks on Windows (`Start-Process`):** Redirect `stdin` (`-RedirectStandardInput`) to an empty `.stdin` file in `.logs\` for **every** hidden child process (`VictoriaLogs`, `ship-logs.ps1` with `-NonInteractive`, backend, frontend), invoke `node.exe` directly on `node_modules\vite\bin\vite.js` instead of `pnpm.cmd`/`cmd.exe` wrappers, and pass `-DisableKeepAlive` on readiness HTTP probes so parent shells/agent runners never block waiting on inherited pipes.
 >    * `start` MUST immediately persist the launched process IDs (`backend_pid`, `frontend_pid`, ports, timestamp) to a root `.pids` state file.
 >    * `stop.ps1` / `stop.sh` MUST read `.pids` and deterministically kill the stored PIDs and their child process trees (`taskkill /PID <id> /T /F` on Windows; `pkill -P <id>` + `kill` on Linux), then delete `.pids`.
 
@@ -91,7 +93,7 @@ Every `build.ps1` and `build.sh` MUST verify the following checklist in order be
 1. **Phase 0 — Zero-Assumption Pre-Flight Checklist:** Verify Git, C/C++ linker, Rust (`rustc`/`cargo`), Node.js, `pnpm`, and (if mobile is included) OpenJDK 17 and Flutter. Attempt automated installation where supported; otherwise throw a detailed error with the download URL and manual install command.
 2. **Phase 1 — Stop Running Services:** Invoke `.\stop.ps1 -Quiet` / `./stop.sh --quiet` to kill active PIDs and unlock running binaries on Windows (`OS Error 5` prevention).
 3. **Phase 2 — Frontend Production Bundling:** Run `pnpm install` and `pnpm run build` (`tsc && vite build` -> `dist/`). Verify `dist/index.html` exists.
-4. **Phase 3 — Backend Release Compilation:** Run `cargo build --release`. Verify the release binary exists in `target/release/`.
+4. **Phase 3 — Backend Release Compilation:** Compile with `cargo build --release` using a shared Cargo target cache (`CARGO_TARGET_DIR` / `[build] target-dir` so multi-repo dependency crates are stored once instead of per-repo) and stage only the compiled release binary to `target/release/`. Verify the release binary exists in `target/release/`.
 5. **Phase 4 — Mobile Release Compilation (Optional):** Run `flutter pub get`, `build_runner`, and `flutter build apk --release --split-per-abi`.
 
 👉 See [examples/build.ps1.template](./examples/build.ps1.template) and [examples/build.sh.template](./examples/build.sh.template).
@@ -102,10 +104,10 @@ Every `build.ps1` and `build.sh` MUST verify the following checklist in order be
 1. **Clean Slate via `stop`:** Invoke `.\stop.ps1 -Quiet` / `./stop.sh --quiet` first if an instance is already running.
 2. **Artifact Verification (`Ensure-BuildArtifacts`):** Check if `frontend/dist/index.html` and `backend/target/release/<binary>` exist. Run `build` automatically **only** if missing.
 3. **Start Observability Stack FIRST (Windows `start.ps1`):** Boot `victoria-logs-prod.exe` on `127.0.0.1:9428`, wait for `/health` `200 OK`, and start `observability/ship-logs.ps1` before any app starts so startup errors and panics are never lost.
-4. **Launch Pre-Compiled Production Artifacts:** Spawn the release binary (`RUST_LOG=info`, `LOG_FORMAT=json`) and static preview server (`pnpm run preview`), redirecting Windows `stdout`/`stderr` to `.logs\*.log` (or relying on `systemd-journald` on Linux).
+4. **Launch Pre-Compiled Production Artifacts (Detached & Pipe-Safe):** Spawn the release binary (`RUST_LOG=info`, `LOG_FORMAT=json`) and static preview server (`node.exe` -> `vite/bin/vite.js preview`, avoiding `pnpm.cmd` wrapper handles), redirecting Windows `stdin` (`-RedirectStandardInput` empty files in `.logs\`), `stdout`, and `stderr` cleanly (or `< /dev/null` on Linux / `systemd-journald`).
 5. **Persist `.pids` State File:** Immediately write `logger_pid`, `logger_owned`, `logger_port`, `shipper_pid`, `backend_pid`, `frontend_pid`, `backend_port`, `frontend_port`, `tailscale_serve`, and `started_at` to `<repo-root>/.pids`.
 6. **Optional Tailscale Serve HTTPS Proxy (Mobile & PWA Access):** When Tailscale is installed on Windows (and `-SkipTailscale` is not passed), discover the machine's MagicDNS hostname via `tailscale status --json` (`Self.DNSName`), expose the frontend over valid TLS with `tailscale serve --bg --yes --https=443 "http://127.0.0.1:$FrontendPort"`, set `APP__SERVER__FRONTEND_URL="https://<dns-host>"` so CORS and Web Push URLs match, and allow `.ts.net` in Vite's `allowedHosts: [".ts.net", "localhost", "127.0.0.1"]`. This provides a trusted HTTPS origin for iOS/Android PWA installation and Web Push testing on phones.
-7. **Fast Readiness Probing & Teardown Trap:** Poll endpoints at 100ms intervals until `200 OK`, print clickable URLs (including `https://<dns-host>`) and PIDs, and trap Ctrl+C (`SIGINT`/`SIGTERM`/`PipelineStoppedException`) to invoke `stop.ps1` / `stop.sh`.
+7. **Fast Readiness Probing, Detached Exit & Optional `-Foreground` Trap:** Poll endpoints at 100ms intervals (`-DisableKeepAlive`) until `200 OK`, print clickable URLs (including `https://<dns-host>`) and PIDs, and **exit `0` immediately in detached mode by default**. Only when `-Foreground` (Windows) or `--foreground` (Linux) is passed does `start` stream live prefixed logs and trap Ctrl+C (`SIGINT`/`SIGTERM`/`PipelineStoppedException`) to invoke `stop.ps1` / `stop.sh`.
 
 👉 See [examples/start.ps1.template](./examples/start.ps1.template) and [examples/start.sh.template](./examples/start.sh.template).
 

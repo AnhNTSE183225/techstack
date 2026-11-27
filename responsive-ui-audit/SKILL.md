@@ -100,6 +100,18 @@ Always implement the `MusicBotUI` custom scroller pattern in your root CSS (`ind
 
 ---
 
+## Mobile PWA Lessons Learned (iOS Safari vs Android Chrome)
+
+1. **Never Hardcode `bottom-*` Above a Safe-Area Bottom Navbar:**
+   - Android Chrome typically reports `env(safe-area-inset-bottom) = 0px`, whereas Face ID iPhones (Safari & Home Screen PWAs) report `34px`.
+   - If a floating bottom navbar uses `pb-[max(18px,env(safe-area-inset-bottom))]`, its top edge sits at `76px` on Android (`18px + 58px`) but **`92px` on iPhone** (`34px + 58px`). Any docked FAB or CTA hardcoded to `bottom-[84px]` will clear Android but get overlapped by the navbar on iPhone.
+   - **Rule:** Always offset stacked floating controls using `bottom-[calc(max(18px,env(safe-area-inset-bottom))+<navHeight+gap>)]`.
+2. **Strictly Lock Root-Viewport Touch Scrolling on iOS WebKit:**
+   - `overflow: hidden` and `position: fixed` on `html, body` still allow iOS Safari/PWA to rubber-band the outer viewport when dragging non-scrollable headers, backdrops, or navbars.
+   - **Rule:** Pair `touch-action: none` on the mobile shell (overridden with `touch-action: pan-y` on `.overflow-y-auto`) with a `{ passive: false }` `touchmove` listener that calls `preventDefault()` unless the touch originates inside an actually scrollable ancestor (`scrollHeight > clientHeight` or `scrollWidth > clientWidth`).
+
+---
+
 ## Helper Scripts
 
 - **Capture Screenshots Across All Viewports**:

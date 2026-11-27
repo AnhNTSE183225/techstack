@@ -232,15 +232,36 @@ if [ "$SKIP_FRONTEND" -eq 0 ] && [ -d "$FRONTEND_DIR" ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 4. Build Backend (Rust Release Mode --release)
+# 4. Build Backend (Rust Release Mode --release, Shared Cargo Target Cache)
 # ------------------------------------------------------------------------------
 if [ "$SKIP_BACKEND" -eq 0 ] && [ -d "$BACKEND_DIR" ]; then
     echo "[Phase 4] Building Backend (Rust Release Profile: opt-level=3, LTO=fat)..."
     cd "$BACKEND_DIR"
-    if [ "$CLEAN" -eq 1 ]; then
-        cargo clean
+
+    if [ -z "${CARGO_TARGET_DIR:-}" ] && ! cargo config get build.target-dir >/dev/null 2>&1; then
+        export CARGO_TARGET_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/cargo-target"
     fi
+
+    PKG_NAME="$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)"
+    TARGET_ROOT="${CARGO_TARGET_DIR:-$(cargo config get build.target-dir 2>/dev/null | tr -d '"' || echo "$BACKEND_DIR/target")}"
+
+    if [ "$CLEAN" -eq 1 ]; then
+        rm -rf "$BACKEND_DIR/target"
+        if [ -n "$PKG_NAME" ]; then
+            cargo clean -p "$PKG_NAME" || true
+        else
+            cargo clean
+        fi
+    fi
+
     cargo build --release
+
+    mkdir -p "$BACKEND_DIR/target/release"
+    if [ -n "$PKG_NAME" ] && [ -f "$TARGET_ROOT/release/$PKG_NAME" ]; then
+        if [ "$(realpath "$TARGET_ROOT/release/$PKG_NAME")" != "$(realpath -m "$BACKEND_DIR/target/release/$PKG_NAME")" ]; then
+            cp -f "$TARGET_ROOT/release/$PKG_NAME" "$BACKEND_DIR/target/release/$PKG_NAME"
+        fi
+    fi
     echo "  [✔] Backend release binary ready!"
     echo ""
 fi

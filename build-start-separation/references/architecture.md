@@ -47,9 +47,9 @@ flowchart TD
         S1{"2. Artifacts Exist?"}
         S1_Build["Fallback: Run build.ps1 / build.sh"]
         S1_Log["3. Boot Logger & Shipper FIRST (VictoriaLogs 9428 + ship-logs.ps1)"]
-        S2["4. Spawn Release Binary & Static Preview Server -> .logs/"]
+        S2["4. Spawn Release Binary & Direct node.exe Preview (Redirect Stdin/Out/Err -> .logs/)"]
         S3["5. Write Logger, Shipper, Backend & Frontend PIDs to .pids"]
-        S4["6. 100ms Health Polling -> Print URLs & PIDs"]
+        S4["6. 100ms Health Polling (-DisableKeepAlive) -> Exit 0 Detached (or Stream if -Foreground)"]
 
         S0 --> S1
         S1 -- "No" --> S1_Build --> S1_Log
@@ -74,7 +74,14 @@ flowchart TD
 
 ---
 
-## 3. Deterministic PID Tracking Protocol (`.pids`)
+## 3. Detached-by-Default Execution & Deterministic PID Tracking (`.pids`)
+
+`start.ps1` (Windows) and `start.sh` (Linux/macOS) **default to detached mode** and return immediately after readiness probing (`exit 0`); callers pass `-Foreground` (`--foreground` / `-f` on Linux) only when interactive log tailing with `Ctrl+C` teardown is desired.
+
+To guarantee Windows PowerShell / CI / agent shells never hang waiting on open child stdio handles after `start.ps1` exits:
+1. **Redirect Standard Input on Every Hidden Process:** Pre-create empty zero-byte `.stdin` files in `.logs\` (`.vl.stdin`, `.ship.stdin`, `.back.stdin`, `.front.stdin`) and pass `-RedirectStandardInput` alongside `-RedirectStandardOutput` and `-RedirectStandardError` on every `Start-Process -WindowStyle Hidden` call (including `powershell.exe -NonInteractive` for `ship-logs.ps1`). Otherwise Windows inherits the caller's stdin pipe handle into the daemon tree.
+2. **Bypass `cmd.exe` / `pnpm.cmd` Console Wrappers:** Launch `node.exe` directly against `frontend/node_modules/vite/bin/vite.js` (`preview --port <P> --host`) rather than invoking `pnpm.cmd run preview`. This prevents `cmd.exe` shim pipe inheritance and ensures `.pids.frontend_pid` points to the actual `node.exe` process.
+3. **Close Probe Connections Promptly:** Pass `-DisableKeepAlive` to `Invoke-WebRequest` readiness checks so pooled TCP sockets do not linger across process exit.
 
 When `start.ps1` or `start.sh` launches the application:
 1. On Windows (`start.ps1`), it boots `VictoriaLogs` (`127.0.0.1:9428`) and `ship-logs.ps1` **first**, before launching the application processes.

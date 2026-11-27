@@ -294,21 +294,66 @@ if (-not $SkipFrontend -and (Test-Path $frontendDir)) {
 }
 
 # ------------------------------------------------------------------------------
-# 4. Build Backend (Rust Release Mode --release)
+# 4. Build Backend (Rust Release Mode --release, Shared Cargo Target Cache)
 # ------------------------------------------------------------------------------
 if (-not $SkipBackend -and (Test-Path $backendDir)) {
     Write-Host "[Phase 4] Building Backend (Rust Release Profile: opt-level=3, LTO=fat)..." -ForegroundColor Cyan
 
     Push-Location $backendDir
     try {
-        if ($Clean) {
-            Write-Host "  Cleaning backend target cache..." -ForegroundColor DarkGray
-            & cargo clean
+        $meta = & cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+        $localTargetDir = Join-Path $backendDir "target"
+        $cargoTargetDir = $meta.target_directory
+        if ([System.IO.Path]::GetFullPath($cargoTargetDir) -ieq [System.IO.Path]::GetFullPath($localTargetDir)) {
+            $env:CARGO_TARGET_DIR = Join-Path $env:LOCALAPPDATA "cargo-target"
+            $cargoTargetDir = $env:CARGO_TARGET_DIR
         }
 
-        Write-Host "  Compiling Rust backend with --release..." -ForegroundColor Cyan
+        $pkg = $meta.packages | Select-Object -First 1
+        $pkgName = $pkg.name
+        $binTargets = @($pkg.targets | Where-Object { $_.kind -contains "bin" } | ForEach-Object { $_.name })
+
+        if ($Clean) {
+            Write-Host "  Cleaning backend artifacts for package '$pkgName'..." -ForegroundColor DarkGray
+            if (Test-Path $localTargetDir) { Remove-Item -Recurse -Force $localTargetDir -ErrorAction SilentlyContinue }
+            if ($pkgName) {
+                & cargo clean -p $pkgName
+            } else {
+                & cargo clean
+            }
+        }
+
+        Write-Host "  Compiling Rust backend with --release (shared target: $cargoTargetDir)..." -ForegroundColor Cyan
         & cargo build --release
         if ($LASTEXITCODE -ne 0) { throw "Backend release compilation failed with exit code $LASTEXITCODE." }
+
+        $cargoReleaseDir = Join-Path $cargoTargetDir "release"
+        $localReleaseDir = Join-Path $localTargetDir "release"
+        if (-not (Test-Path $localReleaseDir)) {
+            New-Item -ItemType Directory -Path $localReleaseDir -Force | Out-Null
+        }
+
+        if ($binTargets.Count -gt 0) {
+            foreach ($bin in $binTargets) {
+                $builtExe = Join-Path $cargoReleaseDir "$bin.exe"
+                if (-not (Test-Path $builtExe)) {
+                    throw "Backend compilation completed, but expected binary was not found at $builtExe"
+                }
+                $localExe = Join-Path $localReleaseDir "$bin.exe"
+                if ([System.IO.Path]::GetFullPath($builtExe) -ine [System.IO.Path]::GetFullPath($localExe)) {
+                    Copy-Item -Path $builtExe -Destination $localExe -Force
+                }
+            }
+        } else {
+            Get-ChildItem (Join-Path $cargoReleaseDir "*.exe") -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notmatch '^build-script-' } |
+                ForEach-Object {
+                    $localExe = Join-Path $localReleaseDir $_.Name
+                    if ([System.IO.Path]::GetFullPath($_.FullName) -ine [System.IO.Path]::GetFullPath($localExe)) {
+                        Copy-Item -Path $_.FullName -Destination $localExe -Force
+                    }
+                }
+        }
     } finally {
         Pop-Location
     }

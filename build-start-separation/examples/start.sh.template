@@ -6,20 +6,20 @@
 #   1. Stops any previously running instance via ./stop.sh
 #   2. Auto-invokes ./build.sh ONLY if production artifacts are missing
 #   3. Launches Backend & Frontend and stores their PIDs in .pids
-#   4. Performs 100ms readiness probing and streams prefixed logs
-#   5. Supports both interactive mode (Ctrl+C invokes ./stop.sh) and
-#      background daemon mode (--background) for external stop via ./stop.sh
+#   4. Performs 100ms readiness probing; defaults to detached daemon mode
+#      for external stop via ./stop.sh (pass --foreground / -f to stream logs
+#      interactively with Ctrl+C trapping)
 # ==============================================================================
 
 set -euo pipefail
 
-BACKGROUND=0
+FOREGROUND=0
 BACKEND_PORT="${BACKEND_PORT:-8080}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 
 for arg in "$@"; do
     case "$arg" in
-        --background|-d) BACKGROUND=1 ;;
+        --foreground|-f) FOREGROUND=1 ;;
     esac
 done
 
@@ -51,12 +51,12 @@ fi
 
 echo "Starting Application in 100% Optimized Production Mode..."
 
-if [ "$BACKGROUND" -eq 1 ]; then
-    (cd "$BACKEND_DIR" && nohup "$BACKEND_BIN" > "$ROOT_DIR/.backend.log" 2>&1 &)
+if [ "$FOREGROUND" -eq 0 ]; then
+    (cd "$BACKEND_DIR" && nohup "$BACKEND_BIN" < /dev/null > "$ROOT_DIR/.backend.log" 2>&1 &)
     sleep 0.1
     BACKEND_PID=$(pgrep -f "$BACKEND_BIN" | head -n 1 || true)
 
-    (cd "$FRONTEND_DIR" && nohup pnpm run preview -- --port "$FRONTEND_PORT" --host > "$ROOT_DIR/.frontend.log" 2>&1 &)
+    (cd "$FRONTEND_DIR" && nohup pnpm run preview -- --port "$FRONTEND_PORT" --host < /dev/null > "$ROOT_DIR/.frontend.log" 2>&1 &)
     sleep 0.2
     FRONTEND_PID=$(lsof -ti :"$FRONTEND_PORT" 2>/dev/null | head -n 1 || true)
 
@@ -68,8 +68,8 @@ FRONTEND_PORT=$FRONTEND_PORT
 STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 EOF
     echo "  [PID State] Stored PIDs in $PID_FILE (Backend: $BACKEND_PID, Frontend: $FRONTEND_PID)"
-    echo "Application running in background! Open: http://localhost:$FRONTEND_PORT"
-    echo "Run ./stop.sh to stop all services."
+    echo "Application running in detached mode (default)! Open: http://localhost:$FRONTEND_PORT"
+    echo "Run ./stop.sh to stop all services (or pass --foreground to stream logs)."
     exit 0
 fi
 

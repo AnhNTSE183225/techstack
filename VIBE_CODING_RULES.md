@@ -49,11 +49,12 @@ Every project MUST include the **three root lifecycle scripts (`build`, `start`,
   * If automated installation is impossible or fails, the script MUST immediately abort with a formatted fatal error displaying the **missing component name, why it is required, the official download URL, and the exact manual install command**.
 * **Pre-Build Binary Unlocking:**
   * `build.ps1` / `build.sh` MUST invoke `stop.ps1` / `stop.sh` before compiling so running executables on Windows are unlocked (preventing `OS Error 5: Access is denied`).
-* **100% Release Optimization:**
-  * Compiles Backend with `cargo build --release` (`opt-level = 3`, `lto = "fat"`), Frontend with `pnpm run build` (`tsc && vite build` -> `dist/`), and Mobile with `flutter build apk --release --split-per-abi`.
+* **100% Release Optimization & Shared Target Cache:**
+  * Compiles Backend with `cargo build --release` (`opt-level = 3`, `lto = "fat"`) into a shared host Cargo target cache (`CARGO_TARGET_DIR` / `~/.cargo/config.toml` `build.target-dir`), staging only the final executable to `target/release/` to prevent multi-GB per-repo `target/` duplication; Frontend builds with `pnpm run build` (`tsc && vite build` -> `dist/`), and Mobile builds with `flutter build apk --release --split-per-abi`.
 
-### 2.2 100% Optimized Production Start (`start.ps1` & `start.sh`)
+### 2.2 100% Optimized, Detached-by-Default Production Start (`start.ps1` & `start.sh`)
 * **Never Run Dev Mode in `start`:** `start.ps1` and `start.sh` MUST NEVER invoke `npm run dev`, `vite`, `cargo run`, or JIT debug watchers. They execute ONLY pre-compiled release binaries (`target/release/`) and static production bundles (`dist/`).
+* **Detached by Default (No Hung Terminals):** Running `.\start.ps1` / `./start.sh` MUST launch services **detached** and return exit code `0` immediately after readiness probing passes (requiring `-Foreground` / `--foreground` to attach live logs). On Windows, every hidden `Start-Process` call MUST specify `-RedirectStandardInput` (pointing to an empty `.logs\*.stdin` file), invoke `node.exe` directly on `node_modules\vite\bin\vite.js` instead of `pnpm.cmd`, and pass `-DisableKeepAlive` on readiness probes so parent shells never hang on inherited stdio pipes.
 * **Auto-Build Fallback:** Checks if `frontend/dist/index.html` and `backend/target/release/<binary>` exist; runs `build` automatically **only** if artifacts are missing.
 * **Mandatory `.pids` Persistence:** Immediately upon spawning the backend and frontend processes, `start` MUST write their OS PIDs (`backend_pid`, `frontend_pid`, ports, and timestamp) to `<project-root>/.pids`.
 

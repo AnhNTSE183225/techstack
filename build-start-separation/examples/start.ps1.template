@@ -1,20 +1,22 @@
 # ==============================================================================
 # Fast Production Runner Template (PowerShell / Windows + VictoriaLogs)
 # ==============================================================================
+# Detached by default (pass -Foreground to attach and stream prefixed logs).
 # Starts decoupled Windows local observability FIRST, then runs ONLY
 # pre-compiled production artifacts (release binary + static preview):
 #   1. Stops any previously running instance cleanly via .\stop.ps1 -Quiet
 #   2. Auto-invokes .\build.ps1 ONLY if production artifacts are missing
 #   3. Ensures VictoriaLogs for Windows is installed & starts it FIRST on 127.0.0.1:9428
 #   4. Starts ship-logs.ps1 BEFORE the apps so stdout/stderr/panics ingest from byte 0
-#   5. Launches Backend & Frontend and persists ALL PIDs to .pids (including logger/shipper)
-#   6. Performs 100ms readiness probing; in foreground mode streams live prefixed logs
-#      and invokes .\stop.ps1 on Ctrl+C (stopping apps first -> confirming shutdown ->
-#      flushing logs -> stopping logger LAST)
+#   5. Launches Backend & Frontend with explicit -RedirectStandardInput empty files
+#      and direct node.exe execution (no cmd.exe/pnpm.cmd console pipe leaks) so
+#      detached start returns immediately without freezing caller terminals/runners
+#   6. Performs 100ms readiness probing (-DisableKeepAlive); exits 0 by default, or
+#      with -Foreground streams live logs and stops cleanly via .\stop.ps1 on Ctrl+C
 # ==============================================================================
 
 param(
-    [switch]$Background,
+    [switch]$Foreground,
     [int]$BackendPort = 8080,
     [int]$FrontendPort = 5173,
     [int]$LoggerPort = 9428,
@@ -200,6 +202,12 @@ $backendOutLog  = Join-Path $logsDir "backend.out.log"
 $backendErrLog  = Join-Path $logsDir "backend.err.log"
 $frontendOutLog = Join-Path $logsDir "frontend.out.log"
 $frontendErrLog = Join-Path $logsDir "frontend.err.log"
+$shipperOutLog  = Join-Path $logsDir "shipper.out.log"
+$shipperErrLog  = Join-Path $logsDir "shipper.err.log"
+$vlInNull       = Join-Path $logsDir ".vl.stdin"
+$shipInNull     = Join-Path $logsDir ".ship.stdin"
+$backInNull     = Join-Path $logsDir ".back.stdin"
+$frontInNull    = Join-Path $logsDir ".front.stdin"
 $stopSentinel   = Join-Path $logsDir ".stop-shipper"
 $flushDoneFile  = Join-Path $logsDir ".shipper-flushed"
 $shipperCfgPath = Join-Path $logsDir "shipper.config.json"
@@ -207,7 +215,7 @@ $shipperCfgPath = Join-Path $logsDir "shipper.config.json"
 foreach ($stale in @($stopSentinel, $flushDoneFile)) {
     if (Test-Path $stale) { Remove-Item -Path $stale -Force -ErrorAction SilentlyContinue }
 }
-foreach ($logFile in @($backendOutLog, $backendErrLog, $frontendOutLog, $frontendErrLog)) {
+foreach ($logFile in @($backendOutLog, $backendErrLog, $frontendOutLog, $frontendErrLog, $shipperOutLog, $shipperErrLog, $vlInNull, $shipInNull, $backInNull, $frontInNull)) {
     [System.IO.File]::WriteAllText($logFile, "", $utf8NoBom)
 }
 
@@ -254,6 +262,7 @@ if (-not $SkipLogger) {
             -FilePath $vlExe `
             -ArgumentList $vlArgs `
             -WorkingDirectory $root `
+            -RedirectStandardInput $vlInNull `
             -RedirectStandardOutput $vlOutLog `
             -RedirectStandardError $vlErrLog `
             -WindowStyle Hidden `
@@ -296,8 +305,11 @@ if (-not $SkipLogger) {
         Write-Host "[2/3] Starting Windows Log Shipper -> http://127.0.0.1:$LoggerPort/insert/jsonline..." -ForegroundColor Cyan
         $shipProc = Start-Process `
             -FilePath "powershell.exe" `
-            -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$shipperScript`"", "-ConfigPath", "`"$shipperCfgPath`"", "-IngestUrl", "`"http://127.0.0.1:$LoggerPort/insert/jsonline?_stream_fields=app,service,host&_msg_field=message&_time_field=timestamp`"") `
+            -ArgumentList @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "`"$shipperScript`"", "-ConfigPath", "`"$shipperCfgPath`"", "-IngestUrl", "`"http://127.0.0.1:$LoggerPort/insert/jsonline?_stream_fields=app,service,host&_msg_field=message&_time_field=timestamp`"") `
             -WorkingDirectory $root `
+            -RedirectStandardInput $shipInNull `
+            -RedirectStandardOutput $shipperOutLog `
+            -RedirectStandardError $shipperErrLog `
             -WindowStyle Hidden `
             -PassThru
         $shipperPid = $shipProc.Id
@@ -334,19 +346,36 @@ if ($tailscaleDnsHost -and -not $env:APP__SERVER__FRONTEND_URL) {
 $backProc = Start-Process `
     -FilePath $backendExe `
     -WorkingDirectory $backendDir `
+    -RedirectStandardInput $backInNull `
     -RedirectStandardOutput $backendOutLog `
     -RedirectStandardError $backendErrLog `
     -WindowStyle Hidden `
     -PassThru
 
-$frontProc = Start-Process `
-    -FilePath $npmExecutable `
-    -ArgumentList "run preview -- --port $FrontendPort --host" `
-    -WorkingDirectory $frontendDir `
-    -RedirectStandardOutput $frontendOutLog `
-    -RedirectStandardError $frontendErrLog `
-    -WindowStyle Hidden `
-    -PassThru
+# Invoke node.exe directly on vite.js when present so cmd.exe/pnpm.cmd does not wrap stdio handles or own PID
+$nodeCmd = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+$viteBin = Join-Path $frontendDir "node_modules\vite\bin\vite.js"
+if ($nodeCmd -and (Test-Path $viteBin)) {
+    $frontProc = Start-Process `
+        -FilePath $nodeCmd.Source `
+        -ArgumentList @("`"$viteBin`"", "preview", "--port", "$FrontendPort", "--host") `
+        -WorkingDirectory $frontendDir `
+        -RedirectStandardInput $frontInNull `
+        -RedirectStandardOutput $frontendOutLog `
+        -RedirectStandardError $frontendErrLog `
+        -WindowStyle Hidden `
+        -PassThru
+} else {
+    $frontProc = Start-Process `
+        -FilePath $npmExecutable `
+        -ArgumentList "run preview -- --port $FrontendPort --host" `
+        -WorkingDirectory $frontendDir `
+        -RedirectStandardInput $frontInNull `
+        -RedirectStandardOutput $frontendOutLog `
+        -RedirectStandardError $frontendErrLog `
+        -WindowStyle Hidden `
+        -PassThru
+}
 
 Save-PidFile `
     -LoggerPid $loggerPid `
@@ -364,7 +393,7 @@ Save-PidFile `
 for ($i = 0; $i -lt 50; $i++) {
     Start-Sleep -Milliseconds 100
     try {
-        $frontCheck = Invoke-WebRequest -Uri "http://127.0.0.1:$FrontendPort" -UseBasicParsing -TimeoutSec 1 -ErrorAction SilentlyContinue
+        $frontCheck = Invoke-WebRequest -Uri "http://127.0.0.1:$FrontendPort" -UseBasicParsing -DisableKeepAlive -TimeoutSec 1 -ErrorAction SilentlyContinue
         if ($frontCheck -and $frontCheck.StatusCode -eq 200) { break }
     } catch {}
 }
@@ -412,8 +441,8 @@ if ($tsIp) {
 Write-Host "  PIDs    : Logger=$loggerPid | Shipper=$shipperPid | Backend=$($backProc.Id) | Frontend=$($frontProc.Id)" -ForegroundColor DarkGray
 Write-Host ""
 
-if ($Background) {
-    Write-Host "Running in background. Run .\stop.ps1 to stop apps cleanly and shut down VictoriaLogs last." -ForegroundColor Yellow
+if (-not $Foreground) {
+    Write-Host "Running in detached mode (default). Run .\stop.ps1 to stop apps cleanly and shut down VictoriaLogs last (pass -Foreground to stream logs)." -ForegroundColor Yellow
     exit 0
 }
 
