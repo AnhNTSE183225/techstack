@@ -93,7 +93,7 @@ function Find-VictoriaLogsExe {
 function Test-VictoriaLogsHealthy {
     param([int]$Port)
     try {
-        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/health" -UseBasicParsing -TimeoutSec 1 -ErrorAction SilentlyContinue
+        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/health" -UseBasicParsing -DisableKeepAlive -TimeoutSec 1 -ErrorAction SilentlyContinue
         return ($null -ne $resp -and $resp.StatusCode -eq 200)
     } catch {
         return $false

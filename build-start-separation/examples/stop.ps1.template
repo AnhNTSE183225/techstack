@@ -211,8 +211,12 @@ foreach ($sentinelPath in @($stopSentinel, $flushDoneFile)) {
     }
 }
 
-# 4. Stop VictoriaLogs LAST (only after apps are confirmed stopped AND logs flushed)
-if ($KeepLogger) {
+# 4. Stop VictoriaLogs LAST (only after apps are confirmed stopped, logs flushed, and no other app is shipping logs)
+$otherShippers = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like "*ship-logs.ps1*" -and $_.ProcessId -ne $shipperPid }
+if ($otherShippers) {
+    Write-StopLog "[4/4] Other active log shipper(s) detected; keeping shared VictoriaLogs (PID $loggerPid) running." "DarkGray"
+} elseif ($KeepLogger) {
     Write-StopLog "[4/4] -KeepLogger set: leaving VictoriaLogs running at http://127.0.0.1:$loggerPort/select/vmui/" "Yellow"
 } elseif ($loggerPid -and ($loggerOwned -or (Test-Path $pidFile))) {
     Write-StopLog "[4/4] Stopping VictoriaLogs last (PID $loggerPid)..." "Cyan"
