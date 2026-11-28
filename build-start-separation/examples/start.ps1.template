@@ -339,18 +339,34 @@ if (-not $SkipTailscale) {
 
 Write-Host "[3/3] Starting Application in 100% Optimized Production Mode..." -ForegroundColor Green
 
-if ($tailscaleDnsHost -and -not $env:APP__SERVER__FRONTEND_URL) {
-    $env:APP__SERVER__FRONTEND_URL = "https://$tailscaleDnsHost"
-}
+# Scope backend env vars cleanly around child launch so running one app never leaks APP__SERVER__PORT into another
+$prevLogFormat = $env:LOG_FORMAT
+$prevRustBacktrace = $env:RUST_BACKTRACE
+$prevAppServerPort = $env:APP__SERVER__PORT
+$prevAppFrontendUrl = $env:APP__SERVER__FRONTEND_URL
 
-$backProc = Start-Process `
-    -FilePath $backendExe `
-    -WorkingDirectory $backendDir `
-    -RedirectStandardInput $backInNull `
-    -RedirectStandardOutput $backendOutLog `
-    -RedirectStandardError $backendErrLog `
-    -WindowStyle Hidden `
-    -PassThru
+try {
+    if (-not $env:LOG_FORMAT) { $env:LOG_FORMAT = "json" }
+    if (-not $env:RUST_BACKTRACE) { $env:RUST_BACKTRACE = "1" }
+    $env:APP__SERVER__PORT = "$BackendPort"
+    if ($tailscaleDnsHost -and -not $env:APP__SERVER__FRONTEND_URL) {
+        $env:APP__SERVER__FRONTEND_URL = "https://$tailscaleDnsHost"
+    }
+
+    $backProc = Start-Process `
+        -FilePath $backendExe `
+        -WorkingDirectory $backendDir `
+        -RedirectStandardInput $backInNull `
+        -RedirectStandardOutput $backendOutLog `
+        -RedirectStandardError $backendErrLog `
+        -WindowStyle Hidden `
+        -PassThru
+} finally {
+    $env:LOG_FORMAT = $prevLogFormat
+    $env:RUST_BACKTRACE = $prevRustBacktrace
+    $env:APP__SERVER__PORT = $prevAppServerPort
+    $env:APP__SERVER__FRONTEND_URL = $prevAppFrontendUrl
+}
 
 # Invoke node.exe directly on vite.js when present so cmd.exe/pnpm.cmd does not wrap stdio handles or own PID
 $nodeCmd = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
